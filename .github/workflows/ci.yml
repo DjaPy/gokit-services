@@ -41,8 +41,6 @@ jobs:
           cache: false
 
       - uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2
 
   test:
     name: Test
