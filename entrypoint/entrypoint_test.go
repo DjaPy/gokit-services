@@ -36,9 +36,6 @@ func (s *trackingService) Stop(_ context.Context, _ error) error {
 	return s.stopErr
 }
 
-var _ service.Service = (*trackingService)(nil)
-var _ service.Stopper = (*trackingService)(nil)
-
 // noSignals disables OS signal catching so tests are not affected by SIGINT/SIGTERM.
 var noSignals = entrypoint.WithCatchSignals()
 
@@ -48,15 +45,16 @@ func cancelAfter(d time.Duration) (context.Context, context.CancelFunc) {
 }
 
 func TestMultipleServices(t *testing.T) {
-	const count = 5
-	svcs := make([]*trackingService, count)
-	svcIfaces := make([]service.Service, count)
+	svcCount := 5
+	svcs := make([]*trackingService, svcCount)
+	svcIfaces := make([]service.Service, svcCount)
 	for i := range svcs {
 		svcs[i] = &trackingService{}
 		svcIfaces[i] = svcs[i]
 	}
 
-	ctx, cancel := cancelAfter(100 * time.Millisecond)
+	timeout := 100 * time.Millisecond
+	ctx, cancel := cancelAfter(timeout)
 	defer cancel()
 
 	entrypoint.New(entrypoint.WithServices(svcIfaces...), noSignals).Run(ctx) //nolint:errcheck
@@ -95,13 +93,12 @@ func TestExternalShutdown(t *testing.T) {
 
 	var runErr error
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		runErr = ep.Run(ctx)
-	}()
+	})
 
-	time.Sleep(20 * time.Millisecond)
+	waitBefore := 20 * time.Millisecond
+	time.Sleep(waitBefore)
 	ep.Shutdown()
 	wg.Wait()
 
@@ -118,7 +115,8 @@ func TestShutdownIdempotent(t *testing.T) {
 
 	go ep.Run(ctx) //nolint:errcheck
 
-	time.Sleep(20 * time.Millisecond)
+	waitBefore := 20 * time.Millisecond
+	time.Sleep(waitBefore)
 	// Multiple Shutdown calls must not panic or block.
 	ep.Shutdown()
 	ep.Shutdown()
@@ -132,13 +130,12 @@ func TestContextCancellationTriggersShutdown(t *testing.T) {
 	ep := entrypoint.New(entrypoint.WithServices(svc), noSignals)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ep.Run(ctx) //nolint:errcheck
-	}()
+	})
 
-	time.Sleep(20 * time.Millisecond)
+	waitBefore := 20 * time.Millisecond
+	time.Sleep(waitBefore)
 	cancel()
 	wg.Wait()
 
@@ -159,7 +156,8 @@ func TestHooksCalledInOrder(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := cancelAfter(50 * time.Millisecond)
+	timeout := 50 * time.Millisecond
+	ctx, cancel := cancelAfter(timeout)
 	defer cancel()
 
 	entrypoint.New(
@@ -193,8 +191,11 @@ func TestPreStartErrorAbortsRun(t *testing.T) {
 }
 
 func TestShutdownTimeout(t *testing.T) {
-	// Service that ignores ctx cancellation and sleeps in Stop.
-	slowSvc := &slowStopService{delay: 500 * time.Millisecond}
+	stopDelay := 500 * time.Millisecond
+	shutdownTimeout := 100 * time.Millisecond
+	maxRunTime := 400 * time.Millisecond
+
+	slowSvc := &slowStopService{delay: stopDelay}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -202,23 +203,25 @@ func TestShutdownTimeout(t *testing.T) {
 	ep := entrypoint.New(
 		entrypoint.WithServices(slowSvc),
 		noSignals,
-		entrypoint.WithShutdownTimeout(100*time.Millisecond),
+		entrypoint.WithShutdownTimeout(shutdownTimeout),
 	)
 
+	waitBefore := 20 * time.Millisecond
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(waitBefore)
 		ep.Shutdown()
 	}()
 
 	start := time.Now()
 	ep.Run(ctx) //nolint:errcheck
 
-	assert.Less(t, time.Since(start), 400*time.Millisecond,
+	assert.Less(t, time.Since(start), maxRunTime,
 		"Run should return after shutdown timeout, not wait for slow Stop")
 }
 
 func TestNoServices(t *testing.T) {
-	ctx, cancel := cancelAfter(50 * time.Millisecond)
+	timeout := 50 * time.Millisecond
+	ctx, cancel := cancelAfter(timeout)
 	defer cancel()
 
 	// No services — Run blocks until ctx expires.

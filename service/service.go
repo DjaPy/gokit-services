@@ -9,12 +9,19 @@ type Service interface {
 	Start(ctx context.Context) error
 }
 
-// Stopper is an optional interface a service may implement to perform
+// Shutdown is an optional interface a service may implement to perform
 // cleanup during graceful shutdown. cause is the error that triggered
 // the shutdown (nil for a clean stop).
 //
-// If a service does not implement Stopper, context cancellation in Start
+// If a service does not implement Shutdown, context cancellation in Start
 // is the only shutdown mechanism.
-type Stopper interface {
+type Shutdown interface {
 	Stop(ctx context.Context, cause error) error
+}
+
+// Prober is an optional interface a service may implement to participate
+// in readiness checks. Probe returns nil when the service is ready to
+// handle traffic, and a non-nil error otherwise.
+type Prober interface {
+	Probe(ctx context.Context) error
 }

@@ -53,10 +53,12 @@ func WithServices(svcs ...service.Service) Option {
 }
 
 // WithShutdownTimeout sets the graceful shutdown timeout.
-// Default: 60s.
+// Default: 60s. Values ≤ 0 are ignored.
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(e *Entrypoint) {
-		e.shutdownTimeout = d
+		if d > 0 {
+			e.shutdownTimeout = d
+		}
 	}
 }
 
@@ -142,15 +144,6 @@ func (e *Entrypoint) Shutdown() {
 //   - a service returning an error from Start
 //   - an explicit call to Shutdown
 //
-// To run a parallel process alongside services, manage it externally via ctx:
-//
-//	ctx, cancel := context.WithCancel(context.Background())
-//	go func() {
-//	    doWork()
-//	    cancel() // triggers shutdown when the process is done
-//	}()
-//	ep.Run(ctx)
-//
 // Lifecycle order:
 //  1. PreStart hooks
 //  2. Start all services (concurrently)
@@ -176,13 +169,11 @@ func (e *Entrypoint) Run(ctx context.Context) error {
 	svcErrs := make(chan error, len(e.services))
 
 	for _, svc := range e.services {
-		wg.Add(1)
-		go func(s service.Service) {
-			defer wg.Done()
-			if err := s.Start(svcCtx); err != nil && svcCtx.Err() == nil {
+		wg.Go(func() {
+			if err := svc.Start(svcCtx); err != nil && svcCtx.Err() == nil {
 				svcErrs <- err
 			}
-		}(svc)
+		})
 	}
 
 	if err := runHooks(ctx, e.onPostStart); err != nil {
@@ -205,7 +196,7 @@ func (e *Entrypoint) Run(ctx context.Context) error {
 
 	svcCancel()
 
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), e.shutdownTimeout)
+	stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(ctx), e.shutdownTimeout)
 	defer stopCancel()
 
 	if err := runHooks(stopCtx, e.onPreStop); err != nil {
@@ -214,17 +205,15 @@ func (e *Entrypoint) Run(ctx context.Context) error {
 
 	var stopWg sync.WaitGroup
 	for _, svc := range e.services {
-		stopper, ok := svc.(service.Stopper)
+		stopper, ok := svc.(service.Shutdown)
 		if !ok {
 			continue
 		}
-		stopWg.Add(1)
-		go func(s service.Stopper) {
-			defer stopWg.Done()
-			if err := s.Stop(stopCtx, shutdownCause); err != nil {
+		stopWg.Go(func() {
+			if err := stopper.Stop(stopCtx, shutdownCause); err != nil {
 				e.logger.Error("service stop error", "error", err)
 			}
-		}(stopper)
+		})
 	}
 
 	allDone := make(chan struct{})
