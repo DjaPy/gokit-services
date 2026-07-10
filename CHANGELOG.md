@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-10
+
+### Fixed
+- `release.yml` failed on every tag push (including `v0.1.0`) because `ci.yml` didn't declare
+  `workflow_call` — no GitHub Release was ever created for `v0.1.0`
+- `justfile` bump/release recipes referenced a non-existent `.version` file — switched to
+  `git describe --tags` as the sole version source
+
 ## [0.1.0] - 2026-07-10
 
 ### Added
@@ -21,5 +29,6 @@
 - `workerpool` — ограниченный пул горутин с backpressure через `Submit(ctx, task)`
 - `service` — базовые интерфейсы `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/DjaPy/gokit-services/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/DjaPy/gokit-services/releases/tag/v0.1.0
