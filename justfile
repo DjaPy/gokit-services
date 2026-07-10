@@ -35,14 +35,14 @@ all-check:
     just lint
     just test-coverage
 
-# bump version helpers
+# bump version helpers — git tags are the sole source of truth (no .version file)
 _get-current-version:
-    @grep VERSION .version | cut -d= -f2
+    @git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0"
 
 _bump-version PART:
     #!/usr/bin/env bash
     set -e
-    current=$(grep VERSION .version | cut -d= -f2)
+    current=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
     IFS='.' read -r major minor patch <<< "$current"
 
     if [ "{{PART}}" = "major" ]; then
@@ -58,7 +58,10 @@ _bump-version PART:
 
     echo "$new_version"
 
-# bump patch version (0.4.1 -> 0.4.2), create tag and commit
+# reminder before any bump/release: CHANGELOG.md [Unreleased] must be moved to
+# [X.Y.Z] - YYYY-MM-DD manually and committed first — this is not automated
+
+# bump patch version (0.1.0 -> 0.1.1), create tag locally
 bump-patch: all-check
     #!/usr/bin/env bash
     set -e
@@ -67,17 +70,12 @@ bump-patch: all-check
 
     git tag "v$new_version"
 
-    git add .version
-    git commit -m "chore: bump version to $new_version"
-
     echo ""
-    echo "✓ Version bumped to $new_version"
     echo "✓ Git tag v$new_version created"
-    echo "✓ .version file updated and committed"
     echo ""
-    echo "To push changes, run: git push && git push --tags"
+    echo "To push, run: git push --tags"
 
-# bump minor version (0.4.1 -> 0.5.0), create tag and commit
+# bump minor version (0.1.0 -> 0.2.0), create tag locally
 bump-minor: all-check
     #!/usr/bin/env bash
     set -e
@@ -86,17 +84,12 @@ bump-minor: all-check
 
     git tag "v$new_version"
 
-    git add .version
-    git commit -m "chore: bump version to $new_version"
-
     echo ""
-    echo "✓ Version bumped to $new_version"
     echo "✓ Git tag v$new_version created"
-    echo "✓ .version file updated and committed"
     echo ""
-    echo "To push changes, run: git push && git push --tags"
+    echo "To push, run: git push --tags"
 
-# bump major version (0.4.1 -> 1.0.0), create tag and commit
+# bump major version (0.1.0 -> 1.0.0), create tag locally
 bump-major: all-check
     #!/usr/bin/env bash
     set -e
@@ -105,17 +98,12 @@ bump-major: all-check
 
     git tag "v$new_version"
 
-    git add .version
-    git commit -m "chore: bump version to $new_version"
-
     echo ""
-    echo "✓ Version bumped to $new_version"
     echo "✓ Git tag v$new_version created"
-    echo "✓ .version file updated and committed"
     echo ""
-    echo "To push changes, run: git push && git push --tags"
+    echo "To push, run: git push --tags"
 
-# bump patch version and push (0.4.1 -> 0.4.2)
+# bump patch version, create tag and push (0.1.0 -> 0.1.1)
 release-patch: all-check
     #!/usr/bin/env bash
     set -e
@@ -123,16 +111,12 @@ release-patch: all-check
     echo "Creating patch release $new_version"
 
     git tag "v$new_version"
-
-    git add .version
-    git commit -m "chore: bump version to $new_version"
-
     git push && git push --tags
 
     echo ""
     echo "✓ Version $new_version released and pushed"
 
-# bump minor version and push (0.4.1 -> 0.5.0)
+# bump minor version, create tag and push (0.1.0 -> 0.2.0)
 release-minor: all-check
     #!/usr/bin/env bash
     set -e
@@ -140,16 +124,12 @@ release-minor: all-check
     echo "Creating minor release $new_version"
 
     git tag "v$new_version"
-
-    git add .version
-    git commit -m "chore: bump version to $new_version"
-
     git push && git push --tags
 
     echo ""
     echo "✓ Version $new_version released and pushed"
 
-# bump major version and push (0.4.1 -> 1.0.0)
+# bump major version, create tag and push (0.1.0 -> 1.0.0)
 release-major: all-check
     #!/usr/bin/env bash
     set -e
@@ -157,10 +137,6 @@ release-major: all-check
     echo "Creating major release $new_version"
 
     git tag "v$new_version"
-
-    git add .version
-    git commit -m "chore: bump version to $new_version"
-
     git push && git push --tags
 
     echo ""

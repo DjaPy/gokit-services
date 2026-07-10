@@ -111,18 +111,22 @@ go test -race ./...    # с детектором гонок
 - **Переход на `v2.0.0`+**: путь модуля должен получить суффикс `/v2` (`module
   github.com/DjaPy/gokit-services/v2` в `go.mod`), это требование Go modules, не опция.
 
-**Процесс релиза:**
+**Процесс релиза** (через `justfile`, git-теги — единственный источник версии, `.version`-файла нет):
 1. Обновить `CHANGELOG.md`: перенести содержимое `[Unreleased]` под новый заголовок
-   `[X.Y.Z] - YYYY-MM-DD`, оставить `[Unreleased]` пустым для следующих изменений
-2. Закоммитить: `git commit -m "chore: release vX.Y.Z"`
-3. Запушить в `main`, затем создать и запушить тег:
+   `[X.Y.Z] - YYYY-MM-DD`, оставить `[Unreleased]` пустым для следующих изменений; закоммитить
+   (`git commit -m "chore: release vX.Y.Z"`) и запушить в `main` — этот шаг justfile не автоматизирует
+2. Запустить один из рецептов (гоняет `all-check`: build+lint+test-coverage, затем тегает и пушит):
    ```bash
-   git tag vX.Y.Z
-   git push origin main
-   git push origin vX.Y.Z
+   just release-patch   # X.Y.Z -> X.Y.(Z+1) — багфиксы
+   just release-minor   # X.Y.Z -> X.(Y+1).0 — новые фичи / breaking changes до v1.0.0
+   just release-major   # X.Y.Z -> (X+1).0.0 — breaking changes после v1.0.0
    ```
-4. `.github/workflows/release.yml` реагирует на push тега `v*`: прогоняет CI и создаёт
-   GitHub Release с auto-generated notes — вручную ничего создавать не нужно
+   Текущая версия читается из `git describe --tags --abbrev=0` — новый тег всегда считается
+   от последнего существующего, вручную ничего не вводится. Для тега без пуша — `just bump-patch`
+   и т.п. (тег создаётся локально, пушить `git push --tags` отдельно).
+3. `.github/workflows/release.yml` реагирует на push тега `v*`: прогоняет CI (переиспользует
+   `ci.yml` как reusable workflow — тот объявляет `workflow_call`) и создаёт GitHub Release
+   с auto-generated notes — вручную ничего создавать не нужно
 
 **Breaking changes до `v1.0.0`**: допустимы в `MINOR`-релизах, но должны быть явно отмечены
 в `CHANGELOG.md` под заголовком `### Changed` с пометкой **BREAKING**.
