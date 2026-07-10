@@ -8,7 +8,8 @@
 entrypoint/   — жизненный цикл приложения
 httpserver/   — HTTP сервер с Prometheus и panic recovery
 httpclient/   — HTTP клиент с middleware chain
-grpc/         — gRPC клиент (в разработке)
+grpcserver/   — gRPC сервер
+grpcclient/   — gRPC клиент
 service/      — интерфейсы Service и Shutdown
 ```
 
