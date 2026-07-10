@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-10
+
 ### Added
 - `entrypoint` — управление жизненным циклом сервисов: SIGINT/SIGTERM, lifecycle-хуки, graceful shutdown
 - `httpserver` — HTTP-сервер с Prometheus-метриками и panic recovery
@@ -19,4 +21,5 @@
 - `workerpool` — ограниченный пул горутин с backpressure через `Submit(ctx, task)`
 - `service` — базовые интерфейсы `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/commits/main
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/DjaPy/gokit-services/releases/tag/v0.1.0
