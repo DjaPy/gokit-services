@@ -95,3 +95,34 @@ user, err := httpclient.Do[User](ctx, c, http.MethodGet, "/users/42")
 go test ./...          # все тесты
 go test -race ./...    # с детектором гонок
 ```
+
+## Версионирование и релизы
+
+Модуль — чистая библиотека (нет `cmd/`), поэтому версия задаётся исключительно git-тегами;
+никакого build-time инжектирования версии (`-ldflags`) не требуется. Потребители фиксируют
+версию через `go get github.com/DjaPy/gokit-services@vX.Y.Z`.
+
+**Политика (SemVer, `vMAJOR.MINOR.PATCH`):**
+- Пока проект в `v0.x.y` (первого релиза ещё не было): `MINOR` — новые фичи и breaking changes,
+  `PATCH` — только багфиксы без изменения API. Обратная совместимость между `0.x` релизами
+  не гарантируется — это ожидаемо для pre-1.0 по духу SemVer.
+- После первого `v1.0.0`: `PATCH` — багфиксы, `MINOR` — обратно совместимые фичи,
+  `MAJOR` — breaking changes.
+- **Переход на `v2.0.0`+**: путь модуля должен получить суффикс `/v2` (`module
+  github.com/DjaPy/gokit-services/v2` в `go.mod`), это требование Go modules, не опция.
+
+**Процесс релиза:**
+1. Обновить `CHANGELOG.md`: перенести содержимое `[Unreleased]` под новый заголовок
+   `[X.Y.Z] - YYYY-MM-DD`, оставить `[Unreleased]` пустым для следующих изменений
+2. Закоммитить: `git commit -m "chore: release vX.Y.Z"`
+3. Запушить в `main`, затем создать и запушить тег:
+   ```bash
+   git tag vX.Y.Z
+   git push origin main
+   git push origin vX.Y.Z
+   ```
+4. `.github/workflows/release.yml` реагирует на push тега `v*`: прогоняет CI и создаёт
+   GitHub Release с auto-generated notes — вручную ничего создавать не нужно
+
+**Breaking changes до `v1.0.0`**: допустимы в `MINOR`-релизах, но должны быть явно отмечены
+в `CHANGELOG.md` под заголовком `### Changed` с пометкой **BREAKING**.
