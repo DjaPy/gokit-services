@@ -8,6 +8,16 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-11
+
+### Added
+- `example/orders-service` — a runnable example microservice combining every gokit-services
+  primitive (`entrypoint`, `httpserver`, `httpclient`, `grpcserver`, `grpcclient`,
+  `healthserver`, `periodic`, `workerpool`): an in-memory order store exposed over both REST
+  and gRPC, async order confirmation via `workerpool`, a `periodic` job that expires stale
+  orders and gates `healthserver` readiness, and an htmx dashboard that exercises all of it
+  over real network calls (`httpclient` for REST/health, a live `grpcclient` connection for gRPC)
+
 ## [0.1.1] - 2026-07-10
 
 ### Fixed
@@ -29,6 +39,7 @@
 - `workerpool` — ограниченный пул горутин с backpressure через `Submit(ctx, task)`
 - `service` — базовые интерфейсы `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/DjaPy/gokit-services/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/DjaPy/gokit-services/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/DjaPy/gokit-services/releases/tag/v0.1.0
