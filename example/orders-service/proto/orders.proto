@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package orders.v1;
+
+option go_package = "github.com/DjaPy/gokit-services/example/orders-service/proto;ordersv1";
+
+// OrdersService manages customer orders. Exposed both over gRPC (this
+// service) and over HTTP (see ../httpapi.go) — both bind to the same
+// in-memory Store.
+service OrdersService {
+  // CreateOrder enqueues a new order for async processing and returns it
+  // immediately in PENDING status.
+  rpc CreateOrder(CreateOrderRequest) returns (Order);
+  // GetOrder returns a single order by ID.
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  // ListOrders returns all known orders.
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+}
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_CONFIRMED = 2;
+  ORDER_STATUS_CANCELED = 3;
+}
+
+message OrderItem {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message Order {
+  string id = 1;
+  string customer_id = 2;
+  repeated OrderItem items = 3;
+  OrderStatus status = 4;
+  int64 created_at_unix = 5;
+  int64 updated_at_unix = 6;
+}
+
+message CreateOrderRequest {
+  string customer_id = 1;
+  repeated OrderItem items = 2;
+}
+
+message GetOrderRequest {
+  string id = 1;
+}
+
+message ListOrdersRequest {}
+
+message ListOrdersResponse {
+  repeated Order orders = 1;
+}
