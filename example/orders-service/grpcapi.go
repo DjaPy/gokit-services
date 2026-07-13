@@ -18,11 +18,11 @@ import (
 // of business logic, not two independent implementations.
 type GRPCAPI struct {
 	ordersv1.UnimplementedOrdersServiceServer
-	store     *Store
+	store     Store
 	processor *OrderProcessor
 }
 
-func NewGRPCAPI(store *Store, processor *OrderProcessor) *GRPCAPI {
+func NewGRPCAPI(store Store, processor *OrderProcessor) *GRPCAPI {
 	return &GRPCAPI{store: store, processor: processor}
 }
 
@@ -67,7 +67,10 @@ func (a *GRPCAPI) CreateOrder(ctx context.Context, req *ordersv1.CreateOrderRequ
 		items = append(items, Item{SKU: it.GetSku(), Quantity: it.GetQuantity()})
 	}
 
-	order := a.store.Create(req.GetCustomerId(), items)
+	order, err := a.store.Create(ctx, req.GetCustomerId(), items)
+	if err != nil {
+		return nil, fmt.Errorf("create order: %w", status.Error(codes.Internal, "internal error"))
+	}
 
 	enqueueCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -75,11 +78,11 @@ func (a *GRPCAPI) CreateOrder(ctx context.Context, req *ordersv1.CreateOrderRequ
 		slog.Error("failed to enqueue order for processing", "order_id", order.ID, "error", err)
 	}
 
-	return toProto(*order), nil
+	return toProto(order), nil
 }
 
-func (a *GRPCAPI) GetOrder(_ context.Context, req *ordersv1.GetOrderRequest) (*ordersv1.Order, error) {
-	order, err := a.store.Get(req.GetId())
+func (a *GRPCAPI) GetOrder(ctx context.Context, req *ordersv1.GetOrderRequest) (*ordersv1.Order, error) {
+	order, err := a.store.Get(ctx, req.GetId())
 	if err != nil {
 		if errors.Is(err, ErrOrderNotFound) {
 			return nil, fmt.Errorf("get order: %w", status.Error(codes.NotFound, "order not found"))
@@ -89,8 +92,11 @@ func (a *GRPCAPI) GetOrder(_ context.Context, req *ordersv1.GetOrderRequest) (*o
 	return toProto(order), nil
 }
 
-func (a *GRPCAPI) ListOrders(_ context.Context, _ *ordersv1.ListOrdersRequest) (*ordersv1.ListOrdersResponse, error) {
-	all := a.store.List()
+func (a *GRPCAPI) ListOrders(ctx context.Context, _ *ordersv1.ListOrdersRequest) (*ordersv1.ListOrdersResponse, error) {
+	all, err := a.store.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list orders: %w", status.Error(codes.Internal, "internal error"))
+	}
 	out := make([]*ordersv1.Order, 0, len(all))
 	for _, o := range all {
 		out = append(out, toProto(o))

@@ -29,6 +29,20 @@ test-coverage:
     go tool cover -func=coverage.out
     @echo "=== Test success ==="
 
+test-infra-up:
+    docker compose -f docker-compose.test.yml up -d --wait
+
+test-infra-down:
+    docker compose -f docker-compose.test.yml down -v
+
+test-integration: test-infra-up
+    #!/usr/bin/env bash
+    set -e
+    export TEST_POSTGRES_DSN="postgresql://gokit:gokit@localhost:5432/gokit_test"
+    export TEST_REDIS_DSN="redis://localhost:6379/0"
+    export TEST_KAFKA_BROKERS="localhost:9092"
+    go test -race ./...
+
 all-check:
     set -e
     just check-dependencies

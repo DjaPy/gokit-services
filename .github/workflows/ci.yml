@@ -48,6 +48,42 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Real Postgres/Kafka/Redis for the integration tests of dbservice /
+    # kafkaproducer / kafkaconsumer / redisservice — this project tests
+    # against real infrastructure, not mocks (see CLAUDE.md). Mirrors
+    # docker-compose.test.yml for local runs (just test-integration).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gokit
+          POSTGRES_PASSWORD: gokit
+          POSTGRES_DB: gokit_test
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd="pg_isready -U gokit"
+          --health-interval=5s --health-timeout=3s --health-retries=10
+      redis:
+        image: redis:7
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=3s --health-retries=10
+      kafka:
+        image: apache/kafka:latest
+        ports:
+          - "9092:9092"
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: "broker,controller"
+          KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+          KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+          KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+          KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +93,10 @@ jobs:
           cache: true
 
       - name: Test with race detector
+        env:
+          TEST_POSTGRES_DSN: postgresql://gokit:gokit@localhost:5432/gokit_test
+          TEST_REDIS_DSN: redis://localhost:6379/0
+          TEST_KAFKA_BROKERS: localhost:9092
         run: go test -race -coverprofile=coverage.out ./...
 
       - name: Coverage summary

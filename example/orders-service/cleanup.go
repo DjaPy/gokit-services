@@ -3,6 +3,7 @@ package orders
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -19,12 +20,12 @@ var errCleanupNotWarmedUp = errors.New("cleanup job has not completed its first 
 // Prober uses: the service isn't ready until stale orders have actually
 // been swept once, not just until the process started.
 type CleanupJob struct {
-	store      *Store
+	store      Store
 	staleAfter time.Duration
 	warmedUp   atomic.Bool
 }
 
-func NewCleanupJob(store *Store, staleAfter time.Duration) *CleanupJob {
+func NewCleanupJob(store Store, staleAfter time.Duration) *CleanupJob {
 	return &CleanupJob{store: store, staleAfter: staleAfter}
 }
 
@@ -35,9 +36,12 @@ func (j *CleanupJob) Service(interval time.Duration) *periodic.Service {
 	return periodic.New(interval, j.run, periodic.WithImmediateStart())
 }
 
-func (j *CleanupJob) run(_ context.Context) error {
+func (j *CleanupJob) run(ctx context.Context) error {
 	cutoff := time.Now().Add(-j.staleAfter)
-	canceled := j.store.CancelStalePending(cutoff)
+	canceled, err := j.store.CancelStalePending(ctx, cutoff)
+	if err != nil {
+		return fmt.Errorf("cancel stale pending orders: %w", err)
+	}
 	if len(canceled) > 0 {
 		slog.Info("canceled stale pending orders", "count", len(canceled), "order_ids", canceled)
 	}

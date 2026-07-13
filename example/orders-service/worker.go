@@ -15,7 +15,7 @@ import (
 // burst of orders can't spawn unbounded goroutines; Enqueue's backpressure
 // (it blocks until the queue has room) is what protects the process.
 type OrderProcessor struct {
-	store        *Store
+	store        Store
 	pool         *workerpool.Pool
 	processDelay time.Duration
 }
@@ -23,7 +23,7 @@ type OrderProcessor struct {
 // NewOrderProcessor creates a processor backed by poolSize worker
 // goroutines. processDelay simulates the latency of the downstream calls a
 // real implementation would make.
-func NewOrderProcessor(store *Store, poolSize int, processDelay time.Duration) *OrderProcessor {
+func NewOrderProcessor(store Store, poolSize int, processDelay time.Duration) *OrderProcessor {
 	return &OrderProcessor{
 		store:        store,
 		pool:         workerpool.New(poolSize, workerpool.WithDrainOnStop()),
@@ -39,18 +39,18 @@ func (p *OrderProcessor) Pool() *workerpool.Pool { return p.pool }
 // queue has room or ctx is canceled — callers (the HTTP/gRPC handlers) see
 // that as their own backpressure signal.
 func (p *OrderProcessor) Enqueue(ctx context.Context, orderID string) error {
-	if err := p.pool.Submit(ctx, func(_ context.Context) {
-		p.process(orderID)
+	if err := p.pool.Submit(ctx, func(taskCtx context.Context) {
+		p.process(taskCtx, orderID)
 	}); err != nil {
 		return fmt.Errorf("enqueue order %s: %w", orderID, err)
 	}
 	return nil
 }
 
-func (p *OrderProcessor) process(orderID string) {
+func (p *OrderProcessor) process(ctx context.Context, orderID string) {
 	time.Sleep(p.processDelay)
 
-	if err := p.store.ConfirmPending(orderID); err != nil {
+	if err := p.store.ConfirmPending(ctx, orderID); err != nil {
 		slog.Error("order processing failed", "order_id", orderID, "error", err)
 		return
 	}
