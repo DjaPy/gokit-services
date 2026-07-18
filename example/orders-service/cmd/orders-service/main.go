@@ -22,9 +22,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,13 +35,16 @@ import (
 
 	"github.com/DjaPy/gokit-services/dbservice"
 	"github.com/DjaPy/gokit-services/entrypoint"
-	orders "github.com/DjaPy/gokit-services/example/orders-service"
+	"github.com/DjaPy/gokit-services/example/orders-service"
 	ordersv1 "github.com/DjaPy/gokit-services/example/orders-service/proto"
 	"github.com/DjaPy/gokit-services/grpcclient"
 	"github.com/DjaPy/gokit-services/grpcserver"
 	"github.com/DjaPy/gokit-services/healthserver"
 	"github.com/DjaPy/gokit-services/httpclient"
 	"github.com/DjaPy/gokit-services/httpserver"
+	"github.com/DjaPy/gokit-services/kafka/consumer"
+	"github.com/DjaPy/gokit-services/kafka/producer"
+	"github.com/DjaPy/gokit-services/redisservice"
 	"github.com/DjaPy/gokit-services/service"
 )
 
@@ -54,13 +59,12 @@ const (
 	healthAddr    = "127.0.0.1:8082"
 	dashboardPort = 8090
 
-	// defaultPostgresDSN targets the local instance from
-	// docker-compose.test.yml; override with ORDERS_POSTGRES_DSN. The
-	// embedded credentials are the well-known local dev ones, not a secret.
 	defaultPostgresDSN = "postgresql://gokit:gokit@localhost:5432/gokit_test" //nolint:gosec // non-secret local dev default
-	// dbConnectTimeout bounds how long PostStart waits for dbservice to
-	// finish its retrying connect before giving up and failing startup.
-	dbConnectTimeout = 15 * time.Second
+	dbConnectTimeout   = 15 * time.Second
+
+	defaultRedisDSN     = "redis://localhost:6379/0"
+	defaultKafkaBrokers = "localhost:9092"
+	cacheTTL            = 30 * time.Second
 )
 
 func main() {
@@ -70,12 +74,14 @@ func main() {
 	// deterministic regardless of start order.
 	registry := prometheus.NewRegistry()
 
-	// store is chosen once here; every downstream component depends only on
-	// the orders.Store interface, so nothing else changes between backends.
-	// dbSvc is non-nil only in the Postgres path — it is added to the
-	// entrypoint lifecycle (retrying connect, pool metrics, graceful close)
-	// and to the readiness probes below.
-	store, dbSvc := newStore(registry)
+	// The order store is composed once here; every downstream component
+	// depends only on the orders.Store interface, so nothing else changes
+	// between backends or decorators. Optional infrastructure services
+	// (Postgres, Redis, Kafka) are non-nil only when their env flag enables
+	// them, and each is added to the entrypoint lifecycle and readiness
+	// probes below.
+	b := newBackends(registry)
+	store := b.store
 
 	processor := orders.NewOrderProcessor(store, workerPoolSize, orderProcessDelay)
 	cleanup := orders.NewCleanupJob(store, staleAfter)
@@ -91,10 +97,6 @@ func main() {
 	grpcSrv := grpcserver.NewServer(grpcserver.WithPort(9090))
 	ordersv1.RegisterOrdersServiceServer(grpcSrv.GRPCServer(), orders.NewGRPCAPI(store, processor))
 
-	// The dashboard reaches every other service the same way an external
-	// caller would: httpclient for REST/health, a managed grpcclient
-	// connection for gRPC. mustHTTPClient panics on a malformed base URL —
-	// acceptable here since httpAddr/healthAddr are compile-time constants.
 	restClient := mustHTTPClient("http://" + httpAddr)
 	healthClient := mustHTTPClient("http://" + healthAddr)
 	grpcClient := grpcclient.NewClient(grpcAddr,
@@ -109,21 +111,23 @@ func main() {
 		httpserver.WithPrometheusRegisterer(registry),
 	)
 
-	healthOpts := []healthserver.Option{
+	probers := b.probers()
+	healthOpts := make([]healthserver.Option, 0, 5+len(probers))
+	healthOpts = append(healthOpts,
 		healthserver.WithHost("0.0.0.0"),
 		healthserver.WithPort(8082),
 		healthserver.WithAppName("orders-service"),
 		healthserver.WithProber(cleanup),
 		healthserver.WithPrometheusRegisterer(registry),
-	}
-	// dbservice implements service.Prober (Ping-based), so in the Postgres
-	// path readyz stays red until the database is actually reachable.
-	if dbSvc != nil {
-		healthOpts = append(healthOpts, healthserver.WithProber(dbSvc))
+	)
+	for _, p := range probers {
+		healthOpts = append(healthOpts, healthserver.WithProber(p))
 	}
 	healthSrv := healthserver.New(healthOpts...)
 
-	svcs := []service.Service{
+	optional := b.services()
+	svcs := make([]service.Service, 0, 7+len(optional))
+	svcs = append(svcs,
 		httpSrv,
 		grpcSrv,
 		healthSrv,
@@ -131,18 +135,14 @@ func main() {
 		grpcClient,
 		processor.Pool(),
 		cleanup.Service(cleanupInterval),
-	}
-	if dbSvc != nil {
-		svcs = append(svcs, dbSvc)
-	}
+	)
+	svcs = append(svcs, optional...)
 
 	ep := entrypoint.New(
 		entrypoint.WithServices(svcs...),
 		entrypoint.WithShutdownTimeout(10*time.Second),
 		entrypoint.WithPostStart(func(ctx context.Context) error {
-			// With a Postgres backend, create the schema once the pool is
-			// connected before announcing readiness. In-memory backend: no-op.
-			if err := ensureSchemaOnceConnected(ctx, store, dbSvc); err != nil {
+			if err := ensureSchemaOnceConnected(ctx, b.pg, b.db); err != nil {
 				return err
 			}
 			slog.Info("orders-service ready",
@@ -154,13 +154,110 @@ func main() {
 			return nil
 		}),
 	)
-
-	// entrypoint.New already catches SIGINT/SIGTERM by default, so
-	// context.Background() is the right ctx for a real long-running service
-	// — Ctrl+C (or a container orchestrator's SIGTERM) triggers shutdown.
 	if err := ep.Run(context.Background()); err != nil {
 		slog.Info("orders-service stopped", "cause", err)
 	}
+}
+
+// backends holds the composed order store and every optional infrastructure
+// service enabled by an env flag. Each service field is nil unless its flag
+// turned it on; main registers the non-nil ones into the entrypoint lifecycle
+// and readiness probes.
+type backends struct {
+	store orders.Store          // possibly decorated (caching/publishing)
+	pg    *orders.PostgresStore // undecorated Postgres base, for schema init; nil otherwise
+	db    *dbservice.Service    // nil unless ORDERS_STORE=postgres
+	redis *redisservice.Service // nil unless ORDERS_REDIS=on
+	prod  *producer.Producer    // nil unless ORDERS_KAFKA=on
+	cons  *consumer.Consumer    // nil unless ORDERS_KAFKA=on
+}
+
+// newBackends composes the order store from its base backend (ORDERS_STORE)
+// and optional decorators: a Redis read-through cache (ORDERS_REDIS=on) and
+// Kafka event publishing plus a consumer that echoes events back (ORDERS_KAFKA=on).
+// With no flags set it returns the dependency-free in-memory store, so
+// `go run` works out of the box.
+func newBackends(registry prometheus.Registerer) backends {
+	base, db := newStore(registry)
+	b := backends{store: base, db: db}
+	if db != nil {
+		b.pg = base.(*orders.PostgresStore)
+	}
+
+	if os.Getenv("ORDERS_REDIS") == "on" {
+		dsn := envOr("ORDERS_REDIS_DSN", defaultRedisDSN)
+		b.redis = redisservice.New(dsn,
+			redisservice.WithAppName("orders-service"),
+			redisservice.WithPrometheusRegisterer(registry),
+		)
+		b.store = orders.NewCachingStore(b.store, b.redis, cacheTTL)
+		slog.Info("orders-service cache backend", "backend", "redis")
+	}
+
+	if os.Getenv("ORDERS_KAFKA") == "on" {
+		brokers := strings.Split(envOr("ORDERS_KAFKA_BROKERS", defaultKafkaBrokers), ",")
+		b.prod = producer.New(brokers,
+			producer.WithAppName("orders-service"),
+			producer.WithPrometheusRegisterer(registry),
+		)
+		b.store = orders.NewPublishingStore(b.store, orders.NewKafkaPublisher(b.prod, orders.OrdersEventsTopic))
+
+		b.cons = consumer.New(brokers, "orders-service",
+			consumer.WithAppName("orders-service"),
+			consumer.WithPrometheusRegisterer(registry),
+		)
+		b.cons.Handle(orders.OrdersEventsTopic, logOrderEvent)
+		slog.Info("orders-service event backend", "backend", "kafka")
+	}
+
+	return b
+}
+
+func (b backends) services() []service.Service {
+	var out []service.Service
+	if b.db != nil {
+		out = append(out, b.db)
+	}
+	if b.redis != nil {
+		out = append(out, b.redis)
+	}
+	if b.prod != nil {
+		out = append(out, b.prod)
+	}
+	if b.cons != nil {
+		out = append(out, b.cons)
+	}
+	return out
+}
+
+// probers returns the optional backends as readiness probers.
+func (b backends) probers() []service.Prober {
+	var out []service.Prober
+	if b.db != nil {
+		out = append(out, b.db)
+	}
+	if b.redis != nil {
+		out = append(out, b.redis)
+	}
+	if b.prod != nil {
+		out = append(out, b.prod)
+	}
+	if b.cons != nil {
+		out = append(out, b.cons)
+	}
+	return out
+}
+
+// logOrderEvent is the consumer handler for the orders.events topic: it
+// decodes the event and logs it, demonstrating the produce → consume path.
+func logOrderEvent(_ context.Context, msg consumer.Message) error {
+	var ev orders.OrderEvent
+	if err := json.Unmarshal(msg.Value, &ev); err != nil {
+		return fmt.Errorf("decode order event: %w", err)
+	}
+	slog.Info("orders-service event consumed",
+		"type", ev.Type, "order_id", ev.OrderID, "status", ev.Status)
+	return nil
 }
 
 // newStore selects the order repository backend from ORDERS_STORE. The
@@ -186,15 +283,21 @@ func newStore(registry prometheus.Registerer) (orders.Store, *dbservice.Service)
 	return orders.NewPostgresStore(dbSvc), dbSvc
 }
 
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 // ensureSchemaOnceConnected waits (bounded by dbConnectTimeout) for
 // dbservice to finish its retrying connect, then creates the orders schema.
 // It is a no-op for the in-memory backend. Bounding the wait matters
 // because PostStart runs before entrypoint begins listening for shutdown
 // signals — an unbounded wait here would make the process unkillable while
 // the database is down.
-func ensureSchemaOnceConnected(ctx context.Context, store orders.Store, dbSvc *dbservice.Service) error {
-	pg, ok := store.(*orders.PostgresStore)
-	if !ok || dbSvc == nil {
+func ensureSchemaOnceConnected(ctx context.Context, pg *orders.PostgresStore, dbSvc *dbservice.Service) error {
+	if pg == nil || dbSvc == nil {
 		return nil
 	}
 

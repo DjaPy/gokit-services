@@ -2,7 +2,10 @@
 
 ## Requirements
 
-Расширить `gokit-services` четырьмя новыми managed-обёртками инфраструктурных зависимостей — `dbservice` (PostgreSQL через `pgxpool`), `kafkaproducer`/`kafkaconsumer` (раздельные Kafka producer и consumer через `segmentio/kafka-go`, по аналогии с разделением `grpcserver`/`grpcclient`), `redisservice` (Redis через `go-redis/v9`) — каждая следует установленному контракту `service.Service`/`service.Shutdown`/`service.Prober`, ретраит подключение с backoff при старте вместо fail-fast, экспонирует Prometheus-метрики через injectable `Registerer`, и покрыта реальными интеграционными тестами против настоящих service-контейнеров в CI (без моков транспорта). Distributed locks, Redis Streams и БД-backed task queue — явно вне объёма. Каждый пакет реализуется отдельным проходом (`dbservice` → `kafkaconsumer` → `kafkaproducer` → `redisservice`) и в рамках того же прохода интегрируется в `example/orders-service` — это решение отменяет более раннее «example не трогаем» из фазы анализа. Для `dbservice` интеграция означает: `Store` в `orders-service` становится интерфейсом с двумя реализациями — `InMemoryStore` (текущее поведение) и `PostgresStore` (через `dbservice.Pool()`), выбор — через флаг/переменную окружения в `main.go`.
+Расширить `gokit-services` четырьмя новыми managed-обёртками инфраструктурных зависимостей — `dbservice` (PostgreSQL через `pgxpool`), `kafka/producer`/`kafka/consumer` (раздельные Kafka producer и consumer через `segmentio/kafka-go`, по аналогии с разделением `grpcserver`/`grpcclient`, сгруппированы под общим публичным пакетом `kafka` с разделяемой TLS/SASL-логикой), `redisservice` (Redis через `go-redis/v9`) — каждая следует установленному контракту `service.Service`/`service.Shutdown`/`service.Prober`, ретраит подключение с backoff при старте вместо fail-fast, экспонирует Prometheus-метрики через injectable `Registerer`, и покрыта реальными интеграционными тестами против настоящих service-контейнеров в CI (без моков транспорта). Distributed locks, Redis Streams и БД-backed task queue — явно вне объёма. Каждый пакет реализуется отдельным проходом (`dbservice` → `kafka/consumer` → `kafka/producer` → `redisservice`) и в рамках того же прохода интегрируется в `example/orders-service` — это решение отменяет более раннее «example не трогаем» из фазы анализа. Интеграция во всех случаях opt-in через переменную окружения в `main.go`, с дефолтом «выключено», чтобы `go run` работал из коробки без внешней инфраструктуры:
+- **`dbservice`** (`ORDERS_STORE=postgres`): `Store` становится интерфейсом с двумя реализациями — `InMemoryStore` (текущее поведение) и `PostgresStore` (через `dbservice.Pool()`).
+- **Kafka** (`ORDERS_KAFKA=on`): доменные события заказа (`created`/`confirmed`/`canceled`) публикуются в топик `orders.events` через `kafka/producer` (декоратор `PublishingStore` над `Store`), а `kafka/consumer` их вычитывает и логирует/считает метрику — демонстрируя полный round-trip.
+- **Redis** (`ORDERS_REDIS=on`): `redisservice`-backed read-through кэш (`CachingStore`-декоратор над `Store`) для `Get`-запросов с TTL и инвалидацией при мутациях.
 
 ## Entities
 
@@ -67,27 +70,74 @@ class poolProvider {
     +Pool() pgxpool_Pool
 }
 
-class KafkaProducer {
+class CachingStore {
+    +Store
+    +provider redisProvider
+    +ttl Duration
+    +NewCachingStore(inner Store, provider redisProvider, ttl Duration) CachingStore
+}
+
+class redisProvider {
+    <<interface>>
+    +Client() redis_Client
+}
+
+class PublishingStore {
+    +Store
+    +publisher EventPublisher
+    +NewPublishingStore(inner Store, publisher EventPublisher) PublishingStore
+}
+
+class EventPublisher {
+    <<interface>>
+    +Publish(ctx Context, ev OrderEvent) error
+}
+
+class NopPublisher {
+    +Publish(ctx Context, ev OrderEvent) error
+}
+
+class KafkaPublisher {
+    +producer producer_Producer
+    +topic string
+    +NewKafkaPublisher(p producer_Producer, topic string) KafkaPublisher
+    +Publish(ctx Context, ev OrderEvent) error
+}
+
+class OrderEvent {
+    +Type string
+    +OrderID string
+    +CustomerID string
+    +Status string
+    +At Time
+}
+
+class Producer {
     +brokers []string
-    +tls TLSConfig
+    +tlsCfg TLSSASLConfig
     +retry RetryConfig
+    +compression Compression
+    +writeTimeout Duration
+    +maxAttempts int
     +writer kafka_Writer
-    +New(brokers []string, opts ...Option) KafkaProducer
+    +New(brokers []string, opts ...Option) Producer
     +Start(ctx Context) error
     +Stop(ctx Context, cause error) error
     +Probe(ctx Context) error
     +Produce(ctx Context, topic string, key []byte, value []byte, headers map) error
+    +ProduceBatch(ctx Context, msgs []Message) error
 }
 
-class KafkaConsumer {
+class Consumer {
     +brokers []string
     +consumerGroup string
     +topics map~string,Handler~
-    +tls TLSConfig
+    +tlsCfg TLSSASLConfig
     +retry RetryConfig
+    +handlerTimeout Duration
     +pool workerpool_Pool
     +reader kafka_Reader
-    +New(brokers []string, opts ...Option) KafkaConsumer
+    +New(brokers []string, consumerGroup string, opts ...Option) Consumer
     +Handle(topic string, h Handler)
     +Start(ctx Context) error
     +Stop(ctx Context, cause error) error
@@ -114,10 +164,33 @@ class RetryConfig {
     +backoffMax Duration
 }
 
-class KafkaNet {
-    <<internal helper>>
-    +NewDialer(tls TLSConfig, user string, pass string) kafka_Dialer
+class kafka {
+    <<shared package>>
+    +NewDialer(cfg TLSSASLConfig) (kafka_Dialer, error)
     +Probe(ctx Context, brokers []string, dialer kafka_Dialer) error
+}
+
+class TLSSASLConfig {
+    +TLS tls_Config
+    +SASLUser string
+    +SASLPass string
+    +SASLMech SASLMechanism
+}
+
+class SASLMechanism {
+    <<string enum>>
+    SASLPlain
+    SASLScramSHA256
+    SASLScramSHA512
+}
+
+class Compression {
+    <<string enum>>
+    CompressionNone
+    CompressionGzip
+    CompressionSnappy
+    CompressionLz4
+    CompressionZstd
 }
 
 class Handler {
@@ -142,28 +215,40 @@ class WorkerPool {
 Service <|.. DBService : implements
 Shutdown <|.. DBService : implements
 Prober <|.. DBService : implements
-Service <|.. KafkaProducer : implements
-Shutdown <|.. KafkaProducer : implements
-Prober <|.. KafkaProducer : implements
-Service <|.. KafkaConsumer : implements
-Shutdown <|.. KafkaConsumer : implements
-Prober <|.. KafkaConsumer : implements
+Service <|.. Producer : implements
+Shutdown <|.. Producer : implements
+Prober <|.. Producer : implements
+Service <|.. Consumer : implements
+Shutdown <|.. Consumer : implements
+Prober <|.. Consumer : implements
 Service <|.. RedisService : implements
 Shutdown <|.. RedisService : implements
 Prober <|.. RedisService : implements
 
 DBService --> RetryConfig : uses
-KafkaProducer --> RetryConfig : uses
-KafkaConsumer --> RetryConfig : uses
+Producer --> RetryConfig : uses
+Consumer --> RetryConfig : uses
 RedisService --> RetryConfig : uses
-KafkaProducer --> KafkaNet : uses for dialer/probe
-KafkaConsumer --> KafkaNet : uses for dialer/probe
-KafkaConsumer --> WorkerPool : dispatches via
-KafkaConsumer --> Handler : invokes per topic
+Producer --> kafka : uses for dialer/probe
+Consumer --> kafka : uses for dialer/probe
+Producer --> Compression : configured with
+kafka --> TLSSASLConfig : configured by
+TLSSASLConfig --> SASLMechanism : selects
+Consumer --> WorkerPool : dispatches via
+Consumer --> Handler : invokes per topic
 Handler --> Message : receives
 
 Store <|.. InMemoryStore : implements
 Store <|.. PostgresStore : implements
+Store <|.. CachingStore : implements (embeds Store)
+Store <|.. PublishingStore : implements (embeds Store)
+CachingStore --> redisProvider : reads client lazily via
+RedisService <|.. redisProvider : satisfies (Client() accessor)
+PublishingStore --> EventPublisher : emits via
+EventPublisher <|.. NopPublisher : implements
+EventPublisher <|.. KafkaPublisher : implements
+KafkaPublisher --> Producer : produces via
+EventPublisher --> OrderEvent : publishes
 PostgresStore --> poolProvider : reads pool via
 DBService <|.. poolProvider : satisfies (Pool() accessor)
 ```
@@ -171,23 +256,23 @@ DBService <|.. poolProvider : satisfies (Pool() accessor)
 ## Approach
 
 1. **Общий шаблон четырёх пакетов**:
-   - Каждый пакет (`dbservice`, `kafkaproducer`, `kafkaconsumer`, `redisservice`) — top-level, functional options, `slog.Default()` + `WithLogger`, `WithAppName` для label'а метрик (мирроринг `httpserver`), `WithPrometheusRegisterer`.
+   - Каждый пакет (`dbservice`, `kafka/producer`, `kafka/consumer`, `redisservice`) — functional options, `slog.Default()` + `WithLogger`, `WithAppName` для label'а метрик (мирроринг `httpserver`), `WithPrometheusRegisterer`. `dbservice`/`redisservice` — top-level; kafka-пакеты — под `kafka/`.
    - Единственное осознанное отклонение от `httpserver`/`grpcserver`: `Start(ctx)` не fail-fast, а ретраит подключение экспоненциальным backoff, ограниченным `ctx.Done()` — паттерн взят из `/Users/djapy/_past/infravision/golibs/kafka_connector/retry.go` (`WithRetries`), реализуется как общий generic-хелпер `internal/retry.Do[T]`, переиспользуемый всеми четырьмя пакетами — не дублировать логику backoff четырежды.
    - Каждый сервис отдаёт сконструированный клиент через явный метод-аксессор (`Pool()`, `Client()`), доступный только после успешного `Start()` — до этого возвращает `nil` (тот же паттерн, что `grpcclient.Client.Conn()`).
-   - `kafkaproducer` и `kafkaconsumer` — два отдельных пакета, а не один `kafkaservice` с двумя типами: та же мотивация, что и разделение `grpcserver`/`grpcclient` — независимые `Option`-типы без коллизии имён (`WithTLS`, `WithSASL`, `WithLogger` нужны обоим), независимые `service.Service`-регистрации в `entrypoint` (producer-only процесс не обязан конфигурировать consumer group и наоборот).
+   - `kafka/producer` (пакет `producer`) и `kafka/consumer` (пакет `consumer`) — два отдельных пакета, а не один `kafkaservice` с двумя типами: та же мотивация, что и разделение `grpcserver`/`grpcclient` — независимые `Option`-типы без коллизии имён (`WithTLS`, `WithSASL`, `WithLogger` нужны обоим), независимые `service.Service`-регистрации в `entrypoint` (producer-only процесс не обязан конфигурировать consumer group и наоборот). Общие транспортные примитивы (dialer, probe, TLS/SASL-конфиг, SASL-константы) вынесены в родительский публичный пакет `kafka` (`github.com/DjaPy/gokit-services/kafka`), от которого оба зависят, а друг от друга — нет. В `producer`/`consumer` пакет `kafka` импортируется под алиасом `kafkanet`, поскольку короткое имя `kafka` занято `segmentio/kafka-go`.
 
 2. **Техническая реализация**:
    - `dbservice`: `pgxpool.ParseConfig(dsn)` → применить `MaxConns`/`MinConns` → `pgxpool.NewWithConfig` в retry-цикле → `pool.Ping(ctx)` как часть успешной попытки подключения. Метрики пула собираются через периодический poll `pool.Stat()` (не event-хуки, каких у `pgxpool` нет — см. риск в анализе), интервал настраивается через `WithMetricsInterval` (по умолчанию 15s).
-   - `internal/kafkanet` — общий для `kafkaproducer`/`kafkaconsumer` хелпер: строит `*kafka.Dialer` с TLS/SASL из общей конфигурации, и даёт `Probe(ctx, brokers, dialer)` — дёргает `dialer.DialContext` на первый брокер и сразу закрывает соединение. Избегает дублирования TLS/SASL-настройки dialer'а и dial-проверки связности между двумя пакетами.
-   - `kafkaconsumer`: один `kafka.Reader` с `GroupTopics` (список ключей карты обработчиков) на весь процесс — не по reader на топик; входящие сообщения диспетчеризуются в зарегистрированный `Handler` по `msg.Topic` через `workerpool.Pool.Submit`; коммит оффсета — только после успешного выполнения `Handler` (at-least-once, без коммита при ошибке — сообщение будет передоставлено).
-   - `kafkaproducer`: один `kafka.Writer` с пустым `Topic`-полем (топик указывается на каждый вызов `Produce`, а не фиксирован на уровне writer'а), чтобы один продюсер мог отправлять в разные топики.
+   - `kafka` (публичный, ранее задумывался как `internal/kafkanet`) — общий для `producer`/`consumer` пакет: строит `*kafka.Dialer` с TLS/SASL из общей конфигурации (`NewDialer(cfg) (*kafka.Dialer, error)` — возвращает ошибку, т.к. построение SASL-механизма может её дать), и даёт `Probe(ctx, brokers, dialer)` — дёргает `dialer.DialContext` на первый брокер и сразу закрывает соединение. Поддерживает SASL/PLAIN и SASL/SCRAM-SHA-256/512 (выбор через `TLSSASLConfig.SASLMech`, дефолт — PLAIN). Избегает дублирования TLS/SASL-настройки dialer'а и dial-проверки связности между двумя пакетами.
+   - `consumer`: один `kafka.Reader` с `GroupTopics` (список ключей карты обработчиков) на весь процесс — не по reader на топик; входящие сообщения диспетчеризуются в зарегистрированный `Handler` по `msg.Topic` через `workerpool.Pool.Submit`; коммит оффсета — только после успешного выполнения `Handler` (at-least-once, без коммита при ошибке — сообщение будет передоставлено). Каждый вызов `Handler` опционально ограничен таймаутом (`WithHandlerTimeout`, дефолт 0 = без таймаута) — зависший хендлер не держит воркер пула бесконечно. Не-фатальная ошибка `FetchMessage` не крутит цикл вхолостую: перед повтором — пауза `fetchErrorBackoff` (1s), прерываемая по `ctx.Done()`.
+   - `producer`: один `kafka.Writer` с пустым `Topic`-полем (топик указывается на каждый вызов `Produce`/`ProduceBatch`, а не фиксирован на уровне writer'а), чтобы один продюсер мог отправлять в разные топики. Пустой ключ приводится к `nil` (`toKafkaKey`), чтобы `kafka.Hash`-балансировщик распределял такие сообщения по партициям, а не свозил все в партицию 0. `ProduceBatch` шлёт срез сообщений одним `WriteMessages`. Настраиваемы: `WithCompression` (gzip/snappy/lz4/zstd), `WithWriteTimeout`, `WithMaxAttempts`.
    - `redisservice`: `redis.ParseURL(dsn)` → применить `PoolSize` → `redis.NewClient` в retry-цикле → `client.Ping(ctx).Err()` как проверка успешности попытки. Метрики пула — периодический poll `client.PoolStats()`.
    - Retry-политика для всех четырёх: экспоненциальный backoff (`backoff *= 1.5`, капается `backoffMax`), уважает `ctx.Done()` (прерывается немедленно, не проглатывает отмену), ограничен `maxAttempts`; при исчерпании попыток `Start()` возвращает финальную ошибку.
 
 3. **Бизнес-логика и обработка ошибок**:
    - `service.Prober.Probe(ctx)` во всех четырёх — реальная проверка связности (`pool.Ping`, `kafkanet.Probe` на первый брокер, `client.Ping`), не факт «сконструирован без ошибки»; если `Start()` ещё ретраит или клиент/пул ещё `nil` — `Probe` явно возвращает ошибку «not connected», а не паникует на nil pointer.
    - `Stop(ctx, cause)` во всех четырёх идемпотентен через `sync.Once`/`atomic.Bool`-флаг закрытия (мирроринг `grpcserver.Server.shutdownOnce`).
-   - Ошибки при обработке Kafka-сообщения в `kafkaconsumer` логируются через `slog.Error` и инкрементируют счётчик ошибок; сообщение не коммитится (гарантия at-least-once, не at-most-once).
+   - Ошибки при обработке Kafka-сообщения в `consumer` логируются через `slog.Error` и инкрементируют счётчик ошибок; сообщение не коммитится (гарантия at-least-once, не at-most-once).
 
 ## Structure
 
@@ -196,47 +281,55 @@ DBService <|.. poolProvider : satisfies (Pool() accessor)
 2. `service.Shutdown` — опциональный graceful stop: `Stop(ctx context.Context, cause error) error`
 3. `service.Prober` — опциональный readiness-опрос: `Probe(ctx context.Context) error`
 4. `*dbservice.Service` реализует `service.Service`, `service.Shutdown`, `service.Prober`
-5. `*kafkaproducer.Producer` реализует `service.Service`, `service.Shutdown`, `service.Prober`
-6. `*kafkaconsumer.Consumer` реализует `service.Service`, `service.Shutdown`, `service.Prober`
+5. `*producer.Producer` (`kafka/producer`) реализует `service.Service`, `service.Shutdown`, `service.Prober`
+6. `*consumer.Consumer` (`kafka/consumer`) реализует `service.Service`, `service.Shutdown`, `service.Prober`
 7. `*redisservice.Service` реализует `service.Service`, `service.Shutdown`, `service.Prober`
-8. `orders.Store` (`example/orders-service`) — контракт: `Create`/`Get`/`List`/`ConfirmPending`/`CancelStalePending`; `*orders.InMemoryStore` и `*orders.PostgresStore` — обе реализации
+8. `orders.Store` (`example/orders-service`) — контракт: `Create`/`Get`/`List`/`ConfirmPending`/`CancelStalePending`; реализации: `*orders.InMemoryStore`, `*orders.PostgresStore`, а также декораторы `*orders.CachingStore` (redis read-through) и `*orders.PublishingStore` (публикация событий), каждый из которых оборачивает другой `Store` и сам реализует `Store`
 9. `*dbservice.Service` дополнительно удовлетворяет `orders.poolProvider` (`Pool() *pgxpool.Pool`) — приватный интерфейс `example/orders-service`, позволяющий `PostgresStore` не зависеть от конкретного типа `*dbservice.Service` напрямую
+10. `orders.EventPublisher` (`example/orders-service`) — контракт: `Publish(ctx, OrderEvent) error`; `*orders.NopPublisher` (дефолт, no-op) и `*orders.KafkaPublisher` (через `kafka/producer`) — обе реализации; `PublishingStore` зависит только от интерфейса `EventPublisher`
 
 ### Dependencies
 1. `dbservice` → `github.com/jackc/pgx/v5/pgxpool`, `log/slog`, `sync`, `internal/prom`, `internal/retry`
-2. `kafkaproducer` → `github.com/segmentio/kafka-go`, `log/slog`, `sync`, `internal/prom`, `internal/retry`, `internal/kafkanet`
-3. `kafkaconsumer` → `github.com/segmentio/kafka-go`, `workerpool.Pool`, `log/slog`, `sync`, `internal/prom`, `internal/retry`, `internal/kafkanet`
+2. `kafka/producer` → `github.com/segmentio/kafka-go`, `log/slog`, `sync`, `internal/prom`, `internal/retry`, `kafka` (родительский публичный пакет, импортируется под алиасом `kafkanet`)
+3. `kafka/consumer` → `github.com/segmentio/kafka-go`, `workerpool.Pool`, `log/slog`, `sync`, `internal/prom`, `internal/retry`, `kafka` (под алиасом `kafkanet`)
 4. `redisservice` → `github.com/redis/go-redis/v9`, `log/slog`, `sync`, `internal/prom`, `internal/retry`
 5. `internal/retry` (новый) → только stdlib (`context`, `time`); используется всеми четырьмя новыми пакетами, не публичный API
-6. `internal/kafkanet` (новый) → `github.com/segmentio/kafka-go`, `github.com/segmentio/kafka-go/sasl/plain`, `crypto/tls`; используется `kafkaproducer` и `kafkaconsumer`, не публичный API
+6. `kafka` (публичный пакет, ранее задумывался как `internal/kafkanet`) → `github.com/segmentio/kafka-go`, `github.com/segmentio/kafka-go/sasl`, `github.com/segmentio/kafka-go/sasl/plain`, `github.com/segmentio/kafka-go/sasl/scram`, `crypto/tls`; используется `kafka/producer` и `kafka/consumer`; **публичный API** (пользователь ссылается на `kafka.SASLScramSHA512` для `WithSASLMechanism`)
 7. Ни один из четырёх новых пакетов не зависит от `httpserver`/`grpcserver`/`healthserver` напрямую — подключение к readiness-агрегации происходит через `healthserver.WithProber(svc)` на стороне вызывающего кода (в `main`), не изнутри новых пакетов
-8. `kafkaproducer` и `kafkaconsumer` не зависят друг от друга ни в каком направлении (production-код); тесты каждого пакета самодостаточны (используют сырой `kafka.Reader`/`kafka.Writer` для проверки встречной стороны, не импортируют друг друга)
+8. `kafka/producer` и `kafka/consumer` не зависят друг от друга ни в каком направлении (production-код); оба зависят только от общего родителя `kafka`; тесты каждого пакета самодостаточны (используют сырой `kafka.Reader`/`kafka.Writer` для проверки встречной стороны, не импортируют друг друга)
 9. `example/orders-service` → `dbservice` (только для postgres-бэкенда, через `orders.PostgresStore`/`newStore` в `main.go`), `github.com/jackc/pgx/v5`, `github.com/jackc/pgx/v5/pgxpool` (напрямую, для типов `pgx.Row`/`*pgxpool.Pool`, не только через `dbservice`); `orders.PostgresStore` не импортирует `dbservice` напрямую — зависит только от `poolProvider`, приватного интерфейса, которому `*dbservice.Service` удовлетворяет структурно
+10. `example/orders-service` (kafka/redis-интеграция) → `github.com/redis/go-redis/v9` (для `CachingStore`, тип `*redis.Client`), `kafka/producer` (для `KafkaPublisher`) и `kafka/consumer` (для consume-loop событий) — всё только в `main.go`-wiring и в декораторах; доменные типы (`OrderEvent`) не зависят от инфраструктурных пакетов, `PublishingStore` зависит только от интерфейса `EventPublisher`. `CachingStore` **не** импортирует `redisservice`, а читает клиент через приватный `redisProvider` (`Client() *redis.Client`), которому `*redisservice.Service` удовлетворяет структурно — лениво на каждый вызов, чтобы пережить асинхронный `Start` (клиент `nil` → кэш пропускается, fallback на inner), тем же паттерном, что `PostgresStore`/`poolProvider`. Оба декоратора **встраивают** интерфейс `Store` (промоутят немодифицируемые методы), переопределяя только нужные
 
 ### Package Layout
 ```
-dbservice/         — Service (service.go, service_test.go)
-kafkaproducer/      — Producer (producer.go, producer_test.go)
-kafkaconsumer/      — Consumer, Handler, Message (consumer.go, consumer_test.go)
+dbservice/          — Service (service.go, service_test.go)
+kafka/              — публичный пакет kafka: общий dialer/probe + TLS/SASL
+  consts.go         — тип SASLMechanism + константы SASLPlain/SASLScramSHA256/SASLScramSHA512, package doc
+  kafkanet.go       — TLSSASLConfig, NewDialer, Probe, saslMechanism (kafkanet_test.go)
+kafka/producer/     — пакет producer: Producer, Message, Compression (producer.go, producer_test.go)
+kafka/consumer/     — пакет consumer: Consumer, Handler, Message (consumer.go, consumer_test.go)
 redisservice/       — Service (service.go, service_test.go)
 internal/retry/     — общий retry-with-backoff хелпер (retry.go, retry_test.go)
-internal/kafkanet/  — общий dialer/probe хелпер для kafkaproducer/kafkaconsumer (kafkanet.go, kafkanet_test.go)
 ```
-`internal/prom/register.go` не меняется — переиспользуется как есть.
+Имена пакетов: `producer`/`consumer` (не `kafkaproducer`/`kafkaconsumer`); родительский общий пакет — `kafka`. Тесты — white-box (`package producer`/`consumer`/`kafka`, безквалификаторные ссылки), не `_test`-пакеты. `internal/prom/register.go` не меняется — переиспользуется как есть.
 
-`example/orders-service/` (существующий пакет, интеграция первого прохода — `dbservice`):
+`example/orders-service/` (существующий пакет, интеграция всех проходов):
 ```
-store_memory.go    — InMemoryStore (вынесен из прежнего единого файла со Store)
-store_postgres.go  — PostgresStore, poolProvider
-cmd/orders-service/main.go — newStore() выбирает бэкенд по ORDERS_STORE,
-                              ensureSchemaOnceConnected() в PostStart
+store_memory.go     — InMemoryStore (вынесен из прежнего единого файла со Store)
+store_postgres.go   — PostgresStore, poolProvider
+store_caching.go    — CachingStore (redis read-through декоратор над Store)
+events.go           — OrderEvent, EventPublisher, NopPublisher, KafkaPublisher, PublishingStore
+cmd/orders-service/main.go — newBackends() компонует базу (newStore) +
+                             декораторы по ORDERS_STORE/ORDERS_REDIS/ORDERS_KAFKA,
+                             возвращает struct backends с services()/probers();
+                             ensureSchemaOnceConnected() в PostStart
 ```
 
 ## Operations
 
 ### 1. Создать `internal/retry/retry.go`
 
-1. Ответственность: общий generic-хелпер экспоненциального backoff с уважением к `ctx.Done()`, переиспользуемый `dbservice`/`kafkaproducer`/`kafkaconsumer`/`redisservice` вместо четырёхкратного дублирования логики из `kafka_connector/retry.go`.
+1. Ответственность: общий generic-хелпер экспоненциального backoff с уважением к `ctx.Done()`, переиспользуемый `dbservice`/`kafka/producer`/`kafka/consumer`/`redisservice` вместо четырёхкратного дублирования логики из `kafka_connector/retry.go`.
 2. Структура:
    ```go
    type Config struct {
@@ -391,26 +484,42 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
 
 ---
 
-### 7. Создать `internal/kafkanet/kafkanet.go`
+### 7. Создать публичный пакет `kafka` (`kafka/consts.go` + `kafka/kafkanet.go`)
 
-1. Ответственность: общий для `kafkaproducer`/`kafkaconsumer` хелпер построения `*kafka.Dialer` с TLS/SASL и dial-based проверки связности с брокером — избегает дублирования этой логики в двух независимых пакетах.
-2. Структура:
+1. Ответственность: общий для `kafka/producer`/`kafka/consumer` пакет построения `*kafka.Dialer` с TLS/SASL и dial-based проверки связности с брокером — избегает дублирования этой логики в двух независимых пакетах. **Публичный** (а не `internal/`), чтобы SASL-константы были доступны пользователю для `WithSASLMechanism`. Пакет `kafka` не зависит от `producer`/`consumer` (нет цикла).
+2. `kafka/consts.go` — package doc + тип и константы механизма SASL:
+   ```go
+   type SASLMechanism string
+
+   const (
+       SASLPlain       SASLMechanism = "PLAIN"
+       SASLScramSHA256 SASLMechanism = "SCRAM-SHA-256"
+       SASLScramSHA512 SASLMechanism = "SCRAM-SHA-512"
+   )
+   ```
+3. `kafka/kafkanet.go` — структура конфигурации:
    ```go
    type TLSSASLConfig struct {
-       TLS      *tls.Config // nil = plaintext
-       SASLUser string      // пусто = без SASL
+       TLS      *tls.Config   // nil = plaintext
+       SASLUser string        // пусто = без SASL
        SASLPass string
+       SASLMech SASLMechanism // пусто = PLAIN, когда задан SASLUser
    }
    ```
-3. Функция:
+4. Функция (возвращает ошибку — построение SASL-механизма может её дать):
    ```go
-   func NewDialer(cfg TLSSASLConfig) *kafka.Dialer
+   func NewDialer(cfg TLSSASLConfig) (*kafka.Dialer, error)
    ```
    - `dialer := &kafka.Dialer{Timeout: 10 * time.Second, DualStack: true}`
    - если `cfg.TLS != nil` — `dialer.TLS = cfg.TLS`
-   - если `cfg.SASLUser != ""` — `dialer.SASLMechanism = plain.Mechanism{Username: cfg.SASLUser, Password: cfg.SASLPass}` (пакет `github.com/segmentio/kafka-go/sasl/plain`)
-   - вернуть `dialer`
-4. Функция:
+   - если `cfg.SASLUser != ""` — `dialer.SASLMechanism, err = saslMechanism(cfg)`; при ошибке вернуть её
+   - вернуть `dialer, nil`
+5. Приватный `saslMechanism(cfg) (sasl.Mechanism, error)` — switch по `cfg.SASLMech`:
+   - `""`/`SASLPlain` → `plain.Mechanism{Username, Password}` (пакет `.../sasl/plain`)
+   - `SASLScramSHA256` → `scram.Mechanism(scram.SHA256, user, pass)` (пакет `.../sasl/scram`), обёртка `fmt.Errorf("kafkanet: scram-sha-256: %w", err)`
+   - `SASLScramSHA512` → `scram.Mechanism(scram.SHA512, user, pass)`, аналогично
+   - default → `fmt.Errorf("kafkanet: unknown SASL mechanism %q", cfg.SASLMech)`
+6. Функция:
    ```go
    func Probe(ctx context.Context, brokers []string, dialer *kafka.Dialer) error
    ```
@@ -418,24 +527,26 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
    - `conn, err := dialer.DialContext(ctx, "tcp", brokers[0])`
    - при ошибке — `fmt.Errorf("kafkanet: probe %s: %w", brokers[0], err)`
    - при успехе — `defer conn.Close()`, вернуть `nil`
+   - (сообщения об ошибках сохраняют префикс `kafkanet:` — исторический, описывает net-уровень)
 
 ---
 
-### 8. Создать `internal/kafkanet/kafkanet_test.go`
+### 8. Создать `kafka/kafkanet_test.go`
 
-Пакет: `package kafkanet_test`; реальный Kafka (см. Operations #15) — тесты читают брокеры из `TEST_KAFKA_BROKERS` и **скипаются**, если переменная не установлена.
+Пакет: `package kafka_test`; реальный Kafka (см. Operations #15) — тесты читают брокеры из `TEST_KAFKA_BROKERS` и **скипаются**, если переменная не установлена. Пакет импортируется под алиасом `kafkanet`.
 
-1. **TestNewDialer_PlaintextConfig**: `TLSSASLConfig{}` (нулевое значение) — `NewDialer` возвращает dialer без `TLS`/`SASLMechanism`
-2. **TestNewDialer_WithSASL**: `TLSSASLConfig{SASLUser: "u", SASLPass: "p"}` — возвращённый dialer имеет ненулевой `SASLMechanism`
-3. **TestProbe_Succeeds**: реальный доступный брокер — `Probe` возвращает `nil`
-4. **TestProbe_FailsOnUnreachableBroker**: `Probe(ctx, []string{"localhost:1"}, dialer)` — возвращает ошибку в разумное время (не висит)
-5. **TestProbe_NoBrokers_ReturnsError**: пустой `brokers` — возвращает ошибку немедленно, без сетевого вызова
+1. **TestNewDialer_WithSASL**: `TLSSASLConfig{SASLUser: "u", SASLPass: "p"}` — dialer имеет ненулевой `SASLMechanism` с `Name()=="PLAIN"`
+2. **TestProbe_Succeeds**: реальный доступный брокер — `Probe` возвращает `nil`
+3. **TestProbe_FailsOnUnreachableBroker**: `Probe(ctx, []string{"localhost:1"}, dialer)` — возвращает ошибку в разумное время (не висит)
+4. **TestProbe_NoBrokers_ReturnsError**: пустой `brokers` — возвращает ошибку немедленно, без сетевого вызова
+
+(Дополнительное покрытие SCRAM/неизвестного механизма — по усмотрению; в текущем коде оставлено минимальным.)
 
 ---
 
-### 9. Реализовать `kafkaconsumer/consumer.go`
+### 9. Реализовать `kafka/consumer/consumer.go` (пакет `consumer`)
 
-1. Ответственность: жизненный цикл (`Service`/`Shutdown`/`Prober`) управляемого Kafka consumer'а, регистрация обработчиков по топику, consume-loop с диспетчеризацией через `workerpool.Pool`.
+1. Ответственность: жизненный цикл (`Service`/`Shutdown`/`Prober`) управляемого Kafka consumer'а, регистрация обработчиков по топику, consume-loop с диспетчеризацией через `workerpool.Pool`. Пакет `kafka` импортируется под алиасом `kafkanet`.
 
 2. Структура:
    ```go
@@ -452,14 +563,16 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
    }
 
    type Consumer struct {
-       brokers       []string
-       consumerGroup string
-       appName       string
-       tlsCfg        kafkanet.TLSSASLConfig
-       retry         retry.Config
-       poolSize      int
-       logger        *slog.Logger
-       registerer    prometheus.Registerer
+       brokers         []string
+       consumerGroup   string
+       appName         string
+       tlsCfg          kafkanet.TLSSASLConfig
+       retry           retry.Config
+       poolSize        int
+       metricsInterval time.Duration
+       handlerTimeout  time.Duration
+       logger          *slog.Logger
+       registerer      prometheus.Registerer
 
        mu      sync.RWMutex
        topics  map[string]Handler
@@ -486,16 +599,16 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
    - **Precondition** (задокументировать doc-комментарием, аналогично `grpcserver.GRPCServer()`): должен вызываться до `Start`; вызов после `Start` не паникует, но не подхватывается уже запущенным `kafka.Reader` (у которого `GroupTopics` фиксируется на момент создания в `Start`)
 
 5. `Start(ctx context.Context) error`:
-   - `dialer := kafkanet.NewDialer(c.tlsCfg)`
+   - **сначала** собрать `topicList := keys(c.topics)`; если `len(topicList) == 0` — вернуть `errors.New("kafkaconsumer: no topics registered, call Handle before Start")` **немедленно**, до сетевых вызовов и создания пула (Safeguard 1: ошибка сразу, без лишнего round-trip и без утечки горутины пула — отклонение от исходного порядка буллетов)
+   - `dialer, err := kafkanet.NewDialer(c.tlsCfg)`; при ошибке — `fmt.Errorf("kafkaconsumer: dialer: %w", err)` (построение SASL-механизма может дать ошибку)
    - retry-проверка связности: `_, err := retry.Do(ctx, c.retry, func(attemptCtx context.Context) (struct{}, error) { return struct{}{}, kafkanet.Probe(attemptCtx, c.brokers, dialer) })`; при ошибке — `fmt.Errorf("kafkaconsumer: connect: %w", err)`
-   - `c.pool = workerpool.New(c.poolSize)`; запустить `wg.Go(func() { c.pool.Start(ctx) })` (`workerpool.Pool.Start` блокирует до `ctx.Done()`, поэтому в отдельной горутине)
-   - под `c.mu.RLock()` собрать `topicList := keys(c.topics)`; если `len(topicList) == 0` — вернуть `errors.New("kafkaconsumer: no topics registered, call Handle before Start")`
-   - `c.reader = kafka.NewReader(kafka.ReaderConfig{Brokers: c.brokers, GroupID: c.consumerGroup, GroupTopics: topicList, Dialer: dialer, MinBytes: 10e3, MaxBytes: 10e6, MaxWait: 500*time.Millisecond})`
+   - `reader := kafka.NewReader(kafka.ReaderConfig{Brokers: c.brokers, GroupID: c.consumerGroup, GroupTopics: topicList, Dialer: dialer, MinBytes: 10e3, MaxBytes: 10e6, MaxWait: 500*time.Millisecond})`; `pool := workerpool.New(c.poolSize, workerpool.WithLogger(c.logger))`
    - `c.started.Store(true)`
-   - запустить метрики-поллер лага (`ticker` по аналогии с `dbservice`, читает `c.reader.Stats().Lag` каждые N секунд, останавливается на `ctx.Done()`) в отдельной горутине
-   - выполнить consume-loop (блокирующий, в текущей горутине, до `ctx.Done()`): `for { msg, err := c.reader.FetchMessage(ctx); if err != nil { if errors.Is(err, context.Canceled) { break }; c.logger.Error("kafkaconsumer: fetch", "error", err); continue }; converted := toMessage(msg); handler, ok := c.topics[msg.Topic]; if !ok { _ = c.reader.CommitMessages(ctx, msg); continue }; if err := c.pool.Submit(ctx, func(taskCtx context.Context) { c.dispatch(ctx, taskCtx, msg, converted, handler) }); err != nil { break } }`
-   - `c.dispatch` (приватный метод): вызывает `handler(taskCtx, converted)`, замеряет `consumeDuration`, при ошибке — инкремент `consumeErrors`, лог, **не коммитит**; при успехе — `reader.CommitMessages(ctx, msg)` (используя внешний `ctx` из `Start`, не `taskCtx`, чтобы коммит не отменялся по таймауту конкретной задачи), инкремент `consumedTotal`
-   - вернуть `nil` после выхода из consume-loop
+   - `wg.Go(func() { _ = pool.Start(ctx) })` (`workerpool.Pool.Start` блокирует до `ctx.Done()`, в отдельной горутине); `wg.Go(func() { c.pollLag(ctx, reader) })` — поллер лага (`ticker` по аналогии с `dbservice`, читает `reader.Stats().Lag` каждые `metricsInterval`, останавливается на `ctx.Done()`)
+   - выполнить consume-loop (блокирующий, в текущей горутине, до `ctx.Done()`): `for { msg, err := reader.FetchMessage(ctx); if err != nil { if errors.Is(err, context.Canceled) || errors.Is(err, io.ErrClosedPipe) { return }; c.logger.Error("kafkaconsumer: fetch", "error", err); select { case <-ctx.Done(): return; case <-time.After(fetchErrorBackoff): }; continue }; ... }` — выход также по `io.ErrClosedPipe` (после `Stop`-закрытия reader эта ошибка возвращается бесконечно); не-фатальная ошибка → пауза `fetchErrorBackoff` (const `1s`), а не busy-spin
+   - диспетчеризация: `handler, ok := c.handlerFor(msg.Topic)`; если `!ok` — `reader.CommitMessages(ctx, msg)` и continue; иначе `pool.Submit(ctx, func(taskCtx) { c.dispatch(ctx, taskCtx, reader, msg, converted, handler) })`; при ошибке `Submit` — `return`
+   - `c.dispatch` (приватный метод): если `c.handlerTimeout > 0` — обернуть `taskCtx` в `context.WithTimeout(taskCtx, c.handlerTimeout)`; вызвать `handler(handlerCtx, converted)`, замерить `consumeDuration`; при ошибке — инкремент `consumeErrors`, лог, **не коммитит**; при успехе — `reader.CommitMessages(ctx, msg)` (внешний `ctx` из `Start`, не `taskCtx`), инкремент `consumedTotal`
+   - вернуть `nil` после выхода из consume-loop (после `wg.Wait()`)
 
 6. `Stop(ctx context.Context, _ error) error`:
    - через `c.closeOnce`: если `c.reader != nil` — `c.reader.Close()`
@@ -504,22 +617,26 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
 
 7. `Probe(ctx context.Context) error`:
    - если `!c.started.Load()` — вернуть `errors.New("kafkaconsumer: not started")`
-   - вернуть `kafkanet.Probe(ctx, c.brokers, kafkanet.NewDialer(c.tlsCfg))` (обёрнутая ошибка уже содержит контекст «kafkanet: probe ...», доп. обёртка не нужна)
+   - `dialer, err := kafkanet.NewDialer(c.tlsCfg)`; при ошибке — `fmt.Errorf("kafkaconsumer: dialer: %w", err)`
+   - вернуть `kafkanet.Probe(ctx, c.brokers, dialer)` (обёрнутая ошибка уже содержит контекст «kafkanet: probe ...», доп. обёртка не нужна)
 
 8. Options:
    - `WithTLS(cfg *tls.Config)`
    - `WithSASL(user, pass string)`
+   - `WithSASLMechanism(mech kafkanet.SASLMechanism)` — выбор PLAIN/SCRAM (пользователь передаёт `kafka.SASLScramSHA512` и т.п.)
    - `WithRetry(cfg retry.Config)`
    - `WithWorkerPoolSize(n int)`
+   - `WithMetricsInterval(d time.Duration)`
+   - `WithHandlerTimeout(d time.Duration)` — таймаут на вызов хендлера (0 = без таймаута)
    - `WithAppName(name string)`
    - `WithLogger(l *slog.Logger)`
    - `WithPrometheusRegisterer(r prometheus.Registerer)`
 
 ---
 
-### 10. Создать `kafkaconsumer/consumer_test.go`
+### 10. Создать `kafka/consumer/consumer_test.go`
 
-Пакет: `package kafkaconsumer_test`; во всех тестах: `WithPrometheusRegisterer(prometheus.NewRegistry())`; реальный Kafka (см. Operations #15) — тесты читают брокеры из `TEST_KAFKA_BROKERS` (запятая-разделённый список) и **скипаются**, если переменная не установлена. Для отправки тестовых сообщений используется сырой `kafka.Writer` (не `kafkaproducer` — тесты пакета не зависят от другого нового пакета).
+Пакет: white-box `package consumer` (безквалификаторные `New`/`Message`); во всех тестах: `WithPrometheusRegisterer(prometheus.NewRegistry())`; реальный Kafka (см. Operations #15) — тесты читают брокеры из `TEST_KAFKA_BROKERS` (запятая-разделённый список) и **скипаются**, если переменная не установлена. Для отправки тестовых сообщений используется сырой `kafka.Writer` (не `producer` — тесты пакета не зависят от другого нового пакета). Топики создаются явно (`createTopic` через `conn.CreateTopics` + ожидание `ReadPartitions`) — авто-создание на брокере асинхронно; тестовый writer использует собственный `kafka.Transport`, т.к. общий `DefaultTransport` кэширует метаданные кластера.
 
 1. **TestConsumer_StartWithoutHandle_ReturnsError**: `New(brokers, group)` без `Handle` — `Start` возвращает ошибку немедленно
 2. **TestConsumer_HandlerReceivesProducedMessage**: `Handle(topic, handler)` записывает полученные `Message` в канал; `Start` в горутине; сырой `kafka.Writer` отправляет сообщение в тот же топик; `require.Eventually` — handler получил сообщение с ожидаемыми `Key`/`Value`
@@ -530,19 +647,31 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
 
 ---
 
-### 11. Реализовать `kafkaproducer/producer.go`
+### 11. Реализовать `kafka/producer/producer.go` (пакет `producer`)
 
-1. Ответственность: жизненный цикл (`Service`/`Shutdown`/`Prober`) управляемого Kafka producer'а, отправка сообщений в произвольные топики через один shared `kafka.Writer`.
+1. Ответственность: жизненный цикл (`Service`/`Shutdown`/`Prober`) управляемого Kafka producer'а, отправка сообщений в произвольные топики через один shared `kafka.Writer`. Пакет `kafka` импортируется под алиасом `kafkanet`.
 
 2. Структура:
    ```go
+   type Compression string // "" | "gzip" | "snappy" | "lz4" | "zstd"
+
+   type Message struct { // для ProduceBatch; топик — на каждое сообщение
+       Topic   string
+       Key     []byte
+       Value   []byte
+       Headers map[string][]byte
+   }
+
    type Producer struct {
-       brokers    []string
-       appName    string
-       tlsCfg     kafkanet.TLSSASLConfig
-       retry      retry.Config
-       logger     *slog.Logger
-       registerer prometheus.Registerer
+       brokers      []string
+       appName      string
+       tlsCfg       kafkanet.TLSSASLConfig
+       retry        retry.Config
+       compression  Compression
+       writeTimeout time.Duration
+       maxAttempts  int
+       logger       *slog.Logger
+       registerer   prometheus.Registerer
 
        mu      sync.RWMutex
        writer  *kafka.Writer
@@ -562,12 +691,13 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
    Дефолты: `retry=retry.DefaultConfig()`, `logger=slog.Default()`, `registerer=prometheus.DefaultRegisterer`.
 
 4. `Start(ctx context.Context) error`:
-   - `dialer := kafkanet.NewDialer(p.tlsCfg)`
+   - `dialer, err := kafkanet.NewDialer(p.tlsCfg)`; при ошибке — `fmt.Errorf("kafkaproducer: dialer: %w", err)`
    - retry-проверка связности: `_, err := retry.Do(ctx, p.retry, func(attemptCtx context.Context) (struct{}, error) { return struct{}{}, kafkanet.Probe(attemptCtx, p.brokers, dialer) })`; при ошибке — `fmt.Errorf("kafkaproducer: connect: %w", err)`
-   - под `p.mu.Lock()`: `p.writer = &kafka.Writer{Addr: kafka.TCP(p.brokers...), Balancer: &kafka.Hash{}, Transport: &kafka.Transport{Dial: dialer.DialFunc, SASL: dialer.SASLMechanism, TLS: dialer.TLS}}`
-   - `p.started.Store(true)`
    - зарегистрировать метрики через `prom.RegisterOrReuse`
+   - `writer := &kafka.Writer{Addr: kafka.TCP(p.brokers...), Balancer: &kafka.Hash{}, Compression: kafkaCompression(p.compression), Transport: &kafka.Transport{Dial: dialer.DialFunc, SASL: dialer.SASLMechanism, TLS: dialer.TLS}}`; если `p.writeTimeout > 0` — `writer.WriteTimeout = p.writeTimeout`; если `p.maxAttempts > 0` — `writer.MaxAttempts = p.maxAttempts`
+   - под `p.mu.Lock()` сохранить `p.writer = writer`; `p.started.Store(true)`
    - блокировать на `<-ctx.Done()`, вернуть `nil`
+   - приватный `kafkaCompression(Compression) kafka.Compression` — switch на `kafka.Gzip`/`kafka.Snappy`/`kafka.Lz4`/`kafka.Zstd`, дефолт `0` (без сжатия)
 
 5. `Stop(ctx context.Context, _ error) error`:
    - через `p.closeOnce`: под `p.mu.RLock()` прочитать `writer`; если не `nil` — `writer.Close()`
@@ -575,28 +705,39 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
 
 6. `Probe(ctx context.Context) error`:
    - если `!p.started.Load()` — вернуть `errors.New("kafkaproducer: not started")`
-   - вернуть `kafkanet.Probe(ctx, p.brokers, kafkanet.NewDialer(p.tlsCfg))`
+   - `dialer, err := kafkanet.NewDialer(p.tlsCfg)`; при ошибке — `fmt.Errorf("kafkaproducer: dialer: %w", err)`
+   - вернуть `kafkanet.Probe(ctx, p.brokers, dialer)`
 
 7. `func (p *Producer) Produce(ctx context.Context, topic string, key, value []byte, headers map[string][]byte) error`:
    - под `p.mu.RLock()` прочитать `p.writer`; если `nil` — вернуть `errors.New("kafkaproducer: not started")`
-   - собрать `kafka.Message{Topic: topic, Key: key, Value: value, Headers: toKafkaHeaders(headers)}`
+   - собрать `kafka.Message{Topic: topic, Key: toKafkaKey(key), Value: value, Headers: toKafkaHeaders(headers)}` — `toKafkaKey` приводит пустой ключ к `nil` (чтобы `kafka.Hash` не свозил все в партицию 0)
    - `start := time.Now(); err := p.writer.WriteMessages(ctx, msg); p.produceDuration.WithLabelValues(p.appName, topic).Observe(time.Since(start).Seconds())`
    - при ошибке — инкремент `p.produceErrors.WithLabelValues(p.appName, topic)`, вернуть `fmt.Errorf("kafkaproducer: produce to %s: %w", topic, err)`
    - при успехе — инкремент `p.produceTotal.WithLabelValues(p.appName, topic)`, вернуть `nil`
 
-8. Options:
+8. `func (p *Producer) ProduceBatch(ctx context.Context, msgs []Message) error`:
+   - `len(msgs) == 0` → `nil`; если `p.writer == nil` → `errors.New("kafkaproducer: not started")`
+   - каждое сообщение обязано иметь непустой `Topic`, иначе `fmt.Errorf("kafkaproducer: message at index %d has empty topic", i)`
+   - собрать `[]kafka.Message` (с `toKafkaKey`/`toKafkaHeaders`), отправить одним `writer.WriteMessages(ctx, kmsgs...)`
+   - метрики per-topic для всех сообщений (duration = длительность всего батча); при ошибке — `fmt.Errorf("kafkaproducer: produce batch of %d: %w", len(msgs), err)`
+
+9. Options:
    - `WithTLS(cfg *tls.Config)`
    - `WithSASL(user, pass string)`
+   - `WithSASLMechanism(mech kafkanet.SASLMechanism)`
    - `WithRetry(cfg retry.Config)`
+   - `WithCompression(c Compression)`
+   - `WithWriteTimeout(d time.Duration)`
+   - `WithMaxAttempts(n int)`
    - `WithAppName(name string)`
    - `WithLogger(l *slog.Logger)`
    - `WithPrometheusRegisterer(r prometheus.Registerer)`
 
 ---
 
-### 12. Создать `kafkaproducer/producer_test.go`
+### 12. Создать `kafka/producer/producer_test.go`
 
-Пакет: `package kafkaproducer_test`; во всех тестах: `WithPrometheusRegisterer(prometheus.NewRegistry())`; реальный Kafka (см. Operations #15) — тесты читают брокеры из `TEST_KAFKA_BROKERS` и **скипаются**, если переменная не установлена. Для проверки доставленных сообщений используется сырой `kafka.Reader` (не `kafkaconsumer` — тесты пакета не зависят от другого нового пакета).
+Пакет: white-box `package producer`; во всех тестах: `WithPrometheusRegisterer(prometheus.NewRegistry())`; реальный Kafka (см. Operations #15) — тесты читают брокеры из `TEST_KAFKA_BROKERS` и **скипаются**, если переменная не установлена. Для проверки доставленных сообщений используется сырой `kafka.Reader` (не `consumer` — тесты пакета не зависят от другого нового пакета). Топики создаются явно (`createTopic` + ожидание `ReadPartitions`), т.к. `kafka.Writer` не запрашивает авто-создание.
 
 1. **TestProducer_ProduceBeforeStart_ReturnsError**
 2. **TestProducer_ProbeBeforeStart_ReturnsError**
@@ -749,11 +890,84 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
    `test-integration` зависит от `test-infra-up` (запускает контейнеры и ждёт `--wait` их healthy-статуса), затем экспортирует те же переменные, что и CI-шаг, и гоняет `go test -race ./...` — тот же набор тестов, что в CI, без дублирования логики выбора DSN.
 4. `test-infra-down` — отдельная recipe, не вызывается автоматически после `test-integration`: контейнеры намеренно остаются подняты между локальными прогонами (быстрее повторный `just test-integration`), разработчик останавливает их явно.
 
+---
+
+### 17. Kafka-интеграция в `example/orders-service`: события заказа (`events.go`)
+
+1. Ответственность: доменная модель события заказа и её публикация — выполняет решение из Requirements для Kafka-прохода. Событийная модель и интерфейс публикации не зависят от инфраструктурных пакетов; конкретная Kafka-реализация — отдельный тип.
+2. `OrderEvent` — доменный тип (без импорта `kafka/*`):
+   ```go
+   type OrderEvent struct {
+       Type       string    // "created" | "confirmed" | "canceled"
+       OrderID    string
+       CustomerID string
+       Status     string    // строковое значение orders.Status на момент события
+       At         time.Time
+   }
+   ```
+3. `EventPublisher` — интерфейс: `Publish(ctx context.Context, ev OrderEvent) error`.
+4. `NopPublisher` — дефолтная no-op реализация (`Publish` возвращает `nil`), чтобы `go run` работал без Kafka и `PublishingStore` всегда имел ненулевого паблишера.
+5. `KafkaPublisher` — реализация через `kafka/producer`:
+   ```go
+   func NewKafkaPublisher(p *producer.Producer, topic string) *KafkaPublisher
+   func (k *KafkaPublisher) Publish(ctx, ev OrderEvent) error
+   ```
+   - маршалит `OrderEvent` в JSON, вызывает `p.Produce(ctx, k.topic, []byte(ev.OrderID), json, nil)` — ключ = `OrderID` (события одного заказа попадают в одну партицию → сохраняется порядок)
+   - ошибку оборачивает `fmt.Errorf("kafka publish %s: %w", ev.Type, err)`
+6. `PublishingStore` — декоратор `Store` в `events.go`: **встраивает** `Store` (`Get`/`List` промоутятся как есть, без boilerplate) + держит `EventPublisher` и `*slog.Logger`:
+   - `Create` → делегирует `s.Store.Create`, при успехе `emit(OrderEvent{Type: EventCreated, ...})`; ошибка публикации **логируется, но не роняет** запрос (события — best-effort, не блокируют доменную операцию); ошибка `Create` оборачивается `fmt.Errorf("publishing store: create: %w", err)`
+   - `ConfirmPending` → при `nil` от inner `emit(Type: EventConfirmed)` (может изредка эмитить «confirmed» на no-op — приемлемо для примера); ошибка → `"publishing store: confirm: %w"`
+   - `CancelStalePending` → для каждого отменённого id `emit(Type: EventCanceled)`; ошибка → `"publishing store: cancel stale: %w"`
+7. Топик — экспортируемая константа `OrdersEventsTopic = "orders.events"`; типы событий — константы `EventCreated`/`EventConfirmed`/`EventCanceled`.
+
+---
+
+### 18. Redis-интеграция в `example/orders-service`: read-through кэш (`store_caching.go`)
+
+1. Ответственность: `CachingStore` — декоратор `Store`, кэширующий одиночные `Get` в Redis, с TTL и инвалидацией при мутациях. Демонстрирует `redisservice` без изменения доменной/транспортной логики.
+2. Структура (**встраивает** `Store` — `Create`/`List` промоутятся без boilerplate; клиент читается лениво через `redisProvider`, не захватывается напрямую, т.к. `redisservice.Client()` == `nil` до успешного `Start`):
+   ```go
+   type redisProvider interface { Client() *redis.Client }
+
+   type CachingStore struct {
+       Store
+       provider redisProvider
+       ttl      time.Duration
+       logger   *slog.Logger
+   }
+   func NewCachingStore(inner Store, provider redisProvider, ttl time.Duration) *CachingStore
+   func (s *CachingStore) client() *redis.Client { return s.provider.Client() }
+   ```
+   Ключ кэша — `cacheKey(id) = "order:" + id`.
+3. `Get(ctx, id)`:
+   - если `client() == nil` (redisservice ещё подключается) — сразу read-through на `s.Store.Get` (кэш пропускается)
+   - иначе попытка `client.Get(ctx, cacheKey(id)).Bytes()`; при попадании — `json.Unmarshal` в `Order`, вернуть (cache hit); битая запись — fallthrough; ошибка Redis (кроме `redis.Nil`) — лог `Warn`, fallthrough
+   - read-through на `s.Store.Get`; ошибка оборачивается `fmt.Errorf("caching store: get: %w", err)` (включая `ErrOrderNotFound` — отрицательный результат не кэшируется)
+   - при успехе — заполнить кэш `client.Set(ctx, key, json, s.ttl)` (ошибку записи — только `Warn`-лог)
+4. Мутации инвалидируют кэш затронутых заказов **после** успешной делегации:
+   - `Create` — промоутится из встроенного `Store` (заказы не кэшируются на создании)
+   - `ConfirmPending(id)` → `s.Store.ConfirmPending`, затем `invalidate(id)` (`client.Del`); ошибка → `"caching store: confirm: %w"`
+   - `CancelStalePending` → `s.Store.CancelStalePending`, затем `invalidate(ids...)`; ошибка → `"caching store: cancel stale: %w"`
+   - `List` — промоутится из встроенного `Store` (не кэшируется)
+5. `invalidate` — no-op при `client() == nil` или пустом списке id; ошибки `Del` логируются `Warn`, не роняют доменную операцию (консистентность кэша — best-effort, TTL — страховка).
+
+---
+
+### 19. Wiring kafka/redis-бэкендов в `cmd/orders-service/main.go`
+
+1. Ответственность: opt-in выбор и композиция декораторов при старте процесса и подключение `kafka/producer`, `kafka/consumer`, `redisservice` к жизненному циклу `entrypoint`/`healthserver` — только когда соответствующий бэкенд включён. Дефолт (переменные не заданы) — прежнее поведение, без внешних зависимостей.
+2. Redis: если `ORDERS_REDIS=on` → DSN из `ORDERS_REDIS_DSN` (дефолт `redis://localhost:6379/0`, зеркалит `docker-compose.test.yml`); строится `redisservice.New(dsn, WithAppName("orders-service"), WithPrometheusRegisterer(registry))`; базовый `Store` оборачивается `orders.NewCachingStore(store, redisSvc.Client(), cacheTTL)`. `redisSvc` добавляется в `svcs` и как `healthserver.WithProber(redisSvc)`.
+   - `CachingStore` берёт `redisSvc.Client()` — до успешного `Start` он `nil`; клиент читается лениво на каждый вызов, либо кэш-слой пропускает Redis, пока клиент `nil` (fallback на `inner`).
+3. Kafka: если `ORDERS_KAFKA=on` → брокеры из `ORDERS_KAFKA_BROKERS` (дефолт `localhost:9092`); строится `producer.New(brokers, WithAppName("orders-service"), WithPrometheusRegisterer(registry))`; базовый `Store` оборачивается `orders.NewPublishingStore(store, orders.NewKafkaPublisher(prod, ordersEventsTopic))`; поверх — `consumer.New(brokers, "orders-service", WithAppName("orders-service"), WithPrometheusRegisterer(registry))` с `Handle(ordersEventsTopic, logEventHandler)` (демонстрирует round-trip: считает/логирует полученные события). `prod` и `cons` добавляются в `svcs` и как `healthserver.WithProber(...)`.
+4. Порядок композиции декораторов в `newStore` (снаружи внутрь): `PublishingStore( CachingStore( base ) )` — публикация видит финальный результат мутации, кэш ближе к хранилищу. Каждый декоратор включается независимо; если оба выключены — возвращается голый `base` (текущее поведение).
+5. `newBackends` возвращает struct `backends` с полями `store`/`pg`/`db`/`redis`/`prod`/`cons` (каждое `nil`, если бэкенд выключен) и методами `services() []service.Service` / `probers() []service.Prober`, которыми `main` дополняет `svcs` и `healthserver.WithProber`. `ensureSchemaOnceConnected` берёт `b.pg` (голый `*PostgresStore`), т.к. базовый store теперь может быть скрыт под декораторами — type-assert по `store` больше не сработал бы.
+6. Инфраструктура для интеграционных прогонов уже есть (Operations #15/#16 — Postgres/Kafka/Redis-контейнеры); отдельного теста в `main` не требуется — интеграция проверяется ручным `go run` и существующими юнит/интеграционными тестами пакетов.
+
 ## Norms
 
-1. **Именование пакетов**: `dbservice`, `kafkaproducer`, `kafkaconsumer`, `redisservice` — строчные, одно слово; `dbservice`/`redisservice` — суффикс `service` (соответствует `httpserver`/`grpcserver`/`healthserver`), `kafkaproducer`/`kafkaconsumer` — суффикс по роли (соответствует `grpcserver`/`grpcclient`).
+1. **Именование пакетов**: `dbservice`, `redisservice` — строчные, одно слово, суффикс `service` (соответствует `httpserver`/`grpcserver`/`healthserver`). Kafka разложен в дерево: родительский общий публичный пакет `kafka` + подпакеты `kafka/producer` (пакет `producer`) и `kafka/consumer` (пакет `consumer`) — роль-суффикс как у `grpcserver`/`grpcclient`, но сгруппированы под `kafka/`, а общая транспортная логика вынесена в родителя. В `producer`/`consumer` пакет `kafka` импортируется под алиасом `kafkanet` (короткое имя `kafka` занято `segmentio/kafka-go`).
 
-2. **Functional options**: единый `type Option func(*T)` на пакет; поля структуры не экспортируются; опции применяются до первого использования внутренних зависимостей в конструкторе (как во всех существующих пакетах). `kafkaproducer.Option` и `kafkaconsumer.Option` — независимые типы, коллизия имён (`WithTLS`, `WithSASL`, `WithLogger`) невозможна по построению, поскольку пакеты разные.
+2. **Functional options**: единый `type Option func(*T)` на пакет; поля структуры не экспортируются; опции применяются до первого использования внутренних зависимостей в конструкторе (как во всех существующих пакетах). `producer.Option` и `consumer.Option` — независимые типы, коллизия имён (`WithTLS`, `WithSASL`, `WithLogger`) невозможна по построению, поскольку пакеты разные.
 
 3. **Retry-with-backoff вместо fail-fast для `Start()`**: специфично для этих четырёх пакетов (отклонение от `httpserver`/`grpcserver`), через общий `internal/retry.Do[T]`; ошибки конфигурации (невалидный DSN — `pgxpool.ParseConfig`/`redis.ParseURL` возвращают ошибку до попытки сети) **не** ретраятся — возвращаются немедленно, так как это не транзиентный отказ.
 
@@ -761,17 +975,17 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
 
 5. **Идемпотентный `Stop`**: через `sync.Once` (мирроринг `grpcserver.shutdownOnce`) или `atomic.Bool`-флаг — второй и последующие вызовы `Stop` не паникуют и не блокируют.
 
-6. **Метрики только через `internal/prom.RegisterOrReuse`** с injectable `Registerer`; лейбл `<domain>_service` (`db_service`/`kafka_service`/`redis_service`) заполняется из `WithAppName`, мирроринг `http_service` в `httpserver`. `kafkaproducer` и `kafkaconsumer` используют общий префикс `kafka_` в именах метрик, различаясь по типу метрики (`kafka_produce_*` vs `kafka_consume_*`), не по лейблу пакета.
+6. **Метрики только через `internal/prom.RegisterOrReuse`** с injectable `Registerer`; лейбл `<domain>_service` (`db_service`/`kafka_service`/`redis_service`) заполняется из `WithAppName`, мирроринг `http_service` в `httpserver`. `producer` и `consumer` используют общий префикс `kafka_` в именах метрик, различаясь по типу метрики (`kafka_produce_*` vs `kafka_consume_*`), не по лейблу пакета.
 
 7. **Poll-based метрики пула, не event-based**: `pgxpool`/`go-redis` не предоставляют connect/checkout/checkin-хуков (в отличие от SQLAlchemy в ptpylibs) — метрики пула собираются периодическим `Stat()`/`PoolStats()`-poll в отдельной горутине, интервал настраивается через `WithMetricsInterval`, останавливается вместе с `ctx.Done()` в `Start`.
 
-8. **Общая TLS/SASL-логика вынесена в `internal/kafkanet`**: `kafkaproducer` и `kafkaconsumer` не дублируют построение `*kafka.Dialer` и dial-based `Probe` — оба вызывают `kafkanet.NewDialer`/`kafkanet.Probe`, изменения в TLS/SASL-обработке вносятся в одном месте.
+8. **Общая TLS/SASL-логика вынесена в публичный пакет `kafka`** (ранее задумывался как `internal/kafkanet`): `producer` и `consumer` не дублируют построение `*kafka.Dialer` и dial-based `Probe` — оба вызывают `kafkanet.NewDialer`/`kafkanet.Probe` (алиас `kafkanet` для пакета `kafka`), изменения в TLS/SASL-обработке вносятся в одном месте. Пакет публичный, т.к. `SASLMechanism`-константы — часть пользовательского API (`WithSASLMechanism(kafka.SASLScramSHA512)`).
 
 9. **Логирование**: `slog.Default()` по умолчанию, `WithLogger` для переопределения; уровни: `Error` — ошибки подключения/обработки сообщений, `Warn` — неудачная попытка retry (не последняя), `Info` — успешное подключение/переподключение.
 
-10. **Тесты**: `package X_test` (black-box), реальные Postgres/Kafka/Redis через переменные окружения (`TEST_POSTGRES_DSN`/`TEST_KAFKA_BROKERS`/`TEST_REDIS_DSN`), `t.Skip`, если переменная не установлена (локальный `go test ./...` без Docker проходит, CI — гоняет полноценно), `require.Eventually` вместо `time.Sleep`, `WithPrometheusRegisterer(prometheus.NewRegistry())` во всех тестах. Тесты `kafkaproducer` и `kafkaconsumer` не импортируют друг друга — каждый использует сырой `kafka.Writer`/`kafka.Reader` для проверки встречной стороны.
+10. **Тесты**: реальные Postgres/Kafka/Redis через переменные окружения (`TEST_POSTGRES_DSN`/`TEST_KAFKA_BROKERS`/`TEST_REDIS_DSN`), `t.Skip`, если переменная не установлена (локальный `go test ./...` без Docker проходит, CI — гоняет полноценно), `require.Eventually` вместо `time.Sleep`, `WithPrometheusRegisterer(prometheus.NewRegistry())` во всех тестах. Тесты `producer` и `consumer` — white-box (`package producer`/`consumer`), не импортируют друг друга — каждый использует сырой `kafka.Writer`/`kafka.Reader` для проверки встречной стороны. (`dbservice`/`redisservice`/`kafka` — на усмотрение автора; в текущем коде kafka-пакеты white-box.)
 
-11. **Разграничение пакетов**: `kafkaconsumer` зависит от `workerpool` (единственная зависимость на публичный пакет `gokit-services` среди четырёх новых) для диспетчеризации сообщений; `dbservice`/`redisservice`/`kafkaproducer` ни от чего внутри `gokit-services`, кроме `internal/prom`/`internal/retry`/`internal/kafkanet`, не зависят.
+11. **Разграничение пакетов**: `consumer` зависит от `workerpool` (единственная зависимость на публичный пакет `gokit-services` среди kafka-пакетов) для диспетчеризации сообщений; `dbservice`/`redisservice`/`producer` ни от чего внутри `gokit-services`, кроме `internal/prom`/`internal/retry` и (для kafka-пакетов) общего `kafka`, не зависят.
 
 ## Safeguards
 
@@ -779,19 +993,19 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
    - `Start()` при недоступности внешней инфраструктуры ретраит согласно `retry.Config`, не блокирует бесконечно — обязательно завершается либо успехом, либо ошибкой после `MaxAttempts` попыток, либо отменой `ctx`
    - `Probe()` вызванный до успешного `Start()` (или пока `Start()` ещё ретраит) не паникует — возвращает явную ошибку «not connected»/«not started»
    - Ошибки конфигурации (невалидный DSN, невалидный broker-адрес) не ретраятся — возвращаются немедленно из `Start()`
-   - `kafkaconsumer.Start()` без хотя бы одного зарегистрированного через `Handle` топика возвращает ошибку немедленно, не запускает пустой consume-loop
+   - `consumer.Consumer.Start()` без хотя бы одного зарегистрированного через `Handle` топика возвращает ошибку немедленно, не запускает пустой consume-loop
 
 2. **Ограничения производительности**:
-   - `kafkaconsumer`: конкурентность обработки сообщений ограничена `workerpool.Pool` (`WithWorkerPoolSize`, по умолчанию 8) — нет неограниченного роста горутин на burst входящих сообщений
+   - `consumer`: конкурентность обработки сообщений ограничена `workerpool.Pool` (`WithWorkerPoolSize`, по умолчанию 8) — нет неограниченного роста горутин на burst входящих сообщений
    - Poll-интервал метрик пула (`WithMetricsInterval`, по умолчанию 15s) не создаёт заметной нагрузки на `Stat()`/`PoolStats()` (обе операции — O(1) чтение внутреннего состояния, не сетевой вызов)
 
 3. **Ограничения безопасности**:
-   - `kafkaproducer`/`kafkaconsumer` поддерживают TLS (`WithTLS(*tls.Config)`) и SASL/PLAIN (`WithSASL(user, pass)`) через общий `internal/kafkanet` — секреты (`SASLPass`) не логируются ни на одном уровне
+   - `producer`/`consumer` поддерживают TLS (`WithTLS(*tls.Config)`) и SASL — PLAIN **и** SCRAM-SHA-256/512 (`WithSASL(user, pass)` + `WithSASLMechanism(mech)`) через общий пакет `kafka` — секреты (`SASLPass`) не логируются ни на одном уровне
    - DSN-строки (`dbservice`/`redisservice`) могут содержать пароль в открытом виде — не логировать DSN целиком, только хост/порт при необходимости диагностики
 
 4. **Ограничения совместимости**:
-   - Четыре новых пакета — аддитивное изменение, не трогают публичный API существующих пакетов (`httpserver`, `grpcserver`, `grpcclient`, `healthserver`, `periodic`, `workerpool`, `entrypoint`, `service`)
-   - `internal/retry`, `internal/kafkanet` — новые internal-пакеты, не публичный API, могут свободно меняться без учёта обратной совместимости
+   - Новые пакеты — аддитивное изменение, не трогают публичный API существующих пакетов (`httpserver`, `grpcserver`, `grpcclient`, `healthserver`, `periodic`, `workerpool`, `entrypoint`, `service`)
+   - `internal/retry` — internal-пакет, не публичный API, может свободно меняться; `kafka` — **публичный** пакет (SASL-константы в пользовательском API), но до `v1.0.0` breaking changes допустимы по политике версий
 
 5. **Ограничения тестирования**:
    - Каждый новый пакет имеет `_test.go` с покрытием: happy path подключения, `Probe` до/после `Start`, retry на первичном отказе, идемпотентность `Stop`
@@ -800,14 +1014,15 @@ cmd/orders-service/main.go — newStore() выбирает бэкенд по ORD
 
 6. **Ограничения зависимостей**:
    - `dbservice` добавляет `github.com/jackc/pgx/v5` (прямая зависимость)
-   - `kafkaproducer`/`kafkaconsumer`/`internal/kafkanet` вместе добавляют одну прямую зависимость `github.com/segmentio/kafka-go` (используется всеми тремя, а не дублируется в `go.mod`)
+   - `kafka`/`kafka/producer`/`kafka/consumer` вместе добавляют одну прямую зависимость `github.com/segmentio/kafka-go` (включая `sasl`/`sasl/plain`/`sasl/scram`; используется всеми, а не дублируется в `go.mod`)
    - `redisservice` добавляет `github.com/redis/go-redis/v9` (прямая зависимость)
    - Ни один из новых пакетов не добавляет cgo-зависимостей — весь граф остаётся чисто-Go, кросс-компиляция не усложняется
 
 7. **API-контракты**:
    - `Pool()`/`Client()` возвращают `nil` до успешного `Start()` — задокументировано как precondition (мирроринг `grpcclient.Client.Conn()`)
-   - `kafkaconsumer.Handle(topic, handler)` должен вызываться до `Start()` — вызов после не паникует, но не подхватывается уже сконструированным `kafka.Reader`
-   - `kafkaproducer.Produce()` вызванный до `Start()` возвращает ошибку, не паникует на nil `writer`
+   - `consumer.Consumer.Handle(topic, handler)` должен вызываться до `Start()` — вызов после не паникует, но не подхватывается уже сконструированным `kafka.Reader`
+   - `producer.Producer.Produce()`/`ProduceBatch()` вызванные до `Start()` возвращают ошибку, не паникуют на nil `writer`
+   - `kafka.NewDialer` возвращает ошибку при неизвестном/несобираемом SASL-механизме — вызывается в `Start`/`Probe`, ошибка оборачивается как `<pkg>: dialer: %w`
 
 8. **Ограничения CI**:
    - Service-контейнеры (Postgres/Kafka/Redis) добавляются только в job `test` — job'ы `check` (build) и `lint` не требуют инфраструктуры и не замедляются

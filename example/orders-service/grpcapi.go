@@ -56,9 +56,6 @@ func toProtoStatus(s Status) ordersv1.OrderStatus {
 
 func (a *GRPCAPI) CreateOrder(ctx context.Context, req *ordersv1.CreateOrderRequest) (*ordersv1.Order, error) {
 	if req.GetCustomerId() == "" || len(req.GetItems()) == 0 {
-		// fmt.Errorf preserves the *status.Status via errors.As on the
-		// Unwrap chain, so wrapping here does not change the gRPC code or
-		// message the client sees (status.FromError unwraps to find it).
 		return nil, fmt.Errorf("create order: %w", status.Error(codes.InvalidArgument, "customer_id and items are required"))
 	}
 
