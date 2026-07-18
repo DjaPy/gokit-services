@@ -48,9 +48,16 @@ func (p *OrderProcessor) Enqueue(ctx context.Context, orderID string) error {
 }
 
 func (p *OrderProcessor) process(ctx context.Context, orderID string) {
-	time.Sleep(p.processDelay)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(p.processDelay):
+	}
 
 	if err := p.store.ConfirmPending(ctx, orderID); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		slog.Error("order processing failed", "order_id", orderID, "error", err)
 		return
 	}

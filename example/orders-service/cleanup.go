@@ -22,11 +22,27 @@ var errCleanupNotWarmedUp = errors.New("cleanup job has not completed its first 
 type CleanupJob struct {
 	store      Store
 	staleAfter time.Duration
+	ready      func(context.Context) error
 	warmedUp   atomic.Bool
 }
 
-func NewCleanupJob(store Store, staleAfter time.Duration) *CleanupJob {
-	return &CleanupJob{store: store, staleAfter: staleAfter}
+// CleanupOption configures a CleanupJob.
+type CleanupOption func(*CleanupJob)
+
+// WithReadyGate makes each sweep wait for ready(ctx) to return nil first. It
+// gates the first sweep until the backend is actually usable (e.g. the Postgres
+// schema exists), so the job never runs against a store that is still
+// connecting. Once the gate first passes it returns immediately.
+func WithReadyGate(ready func(context.Context) error) CleanupOption {
+	return func(j *CleanupJob) { j.ready = ready }
+}
+
+func NewCleanupJob(store Store, staleAfter time.Duration, opts ...CleanupOption) *CleanupJob {
+	j := &CleanupJob{store: store, staleAfter: staleAfter}
+	for _, opt := range opts {
+		opt(j)
+	}
+	return j
 }
 
 // Service builds the periodic.Service that runs this job. WithImmediateStart
@@ -37,9 +53,17 @@ func (j *CleanupJob) Service(interval time.Duration) *periodic.Service {
 }
 
 func (j *CleanupJob) run(ctx context.Context) error {
+	if j.ready != nil {
+		if err := j.ready(ctx); err != nil {
+			return nil
+		}
+	}
 	cutoff := time.Now().Add(-j.staleAfter)
 	canceled, err := j.store.CancelStalePending(ctx, cutoff)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return fmt.Errorf("cancel stale pending orders: %w", err)
 	}
 	if len(canceled) > 0 {

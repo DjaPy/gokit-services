@@ -142,9 +142,7 @@ func (s *PostgresStore) ConfirmPending(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	// The WHERE status='PENDING' guard makes this the atomic counterpart of
-	// the in-memory version: a concurrent CancelStalePending that already
-	// moved the row out of PENDING simply matches zero rows here.
+
 	const q = `UPDATE orders SET status = $1, updated_at = now() WHERE id = $2 AND status = $3`
 	tag, err := p.Exec(ctx, q, StatusConfirmed, id, StatusPending)
 	if err != nil {
@@ -153,8 +151,7 @@ func (s *PostgresStore) ConfirmPending(ctx context.Context, id string) error {
 	if tag.RowsAffected() > 0 {
 		return nil
 	}
-	// No row updated: either the order does not exist (ErrOrderNotFound) or
-	// it exists but is no longer PENDING (a no-op, like the in-memory store).
+
 	var exists bool
 	if err := p.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM orders WHERE id = $1)`, id).Scan(&exists); err != nil {
 		return fmt.Errorf("postgres store: confirm existence check: %w", err)
