@@ -8,6 +8,28 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-18
+
+### Added
+- `dbservice` — managed PostgreSQL connection pool (`pgxpool`) implementing
+  `service.Service`/`Shutdown`/`Prober` with retry-backed startup and polled pool metrics
+- `kafka` — shared package with Kafka dialer/probe and TLS + SASL (PLAIN, SCRAM-SHA-256/512)
+- `kafka/producer` — managed Kafka producer (`Produce`/`ProduceBatch`, compression, write
+  timeout, max attempts)
+- `kafka/consumer` — managed Kafka consumer group with bounded worker-pool dispatch,
+  at-least-once commit, per-handler timeout, and fetch backoff
+- `redisservice` — managed Redis client (`go-redis/v9`) with retry-backed startup and polled
+  pool metrics
+- `example/orders-service` — PostgreSQL store backend (`ORDERS_STORE=postgres`), opt-in Redis
+  read-through cache (`ORDERS_REDIS=on`) and Kafka event publishing/consumption (`ORDERS_KAFKA=on`)
+- Integration test infrastructure — Postgres/Kafka/Redis service containers in `ci.yml` and
+  `docker-compose.test.yml`, plus `just test-infra-up`/`test-integration`/`test-infra-down`;
+  tests skip when `TEST_POSTGRES_DSN`/`TEST_KAFKA_BROKERS`/`TEST_REDIS_DSN` are unset
+
+### Changed
+- `example/orders-service` — `Store` is now an interface with in-memory and Postgres backends
+  (in-memory remains the default); dashboard UI redesign
+
 ## [0.2.0] - 2026-07-11
 
 ### Added
@@ -39,7 +61,8 @@
 - `workerpool` — ограниченный пул горутин с backpressure через `Submit(ctx, task)`
 - `service` — базовые интерфейсы `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DjaPy/gokit-services/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DjaPy/gokit-services/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/DjaPy/gokit-services/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/DjaPy/gokit-services/releases/tag/v0.1.0
