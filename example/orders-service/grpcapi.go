@@ -55,13 +55,12 @@ func toProtoStatus(s Status) ordersv1.OrderStatus {
 }
 
 func (a *GRPCAPI) CreateOrder(ctx context.Context, req *ordersv1.CreateOrderRequest) (*ordersv1.Order, error) {
-	if req.GetCustomerId() == "" || len(req.GetItems()) == 0 {
-		return nil, fmt.Errorf("create order: %w", status.Error(codes.InvalidArgument, "customer_id and items are required"))
-	}
-
 	items := make([]Item, 0, len(req.GetItems()))
 	for _, it := range req.GetItems() {
 		items = append(items, Item{SKU: it.GetSku(), Quantity: it.GetQuantity()})
+	}
+	if reason, ok := ValidateNewOrder(req.GetCustomerId(), items); !ok {
+		return nil, fmt.Errorf("create order: %w", status.Error(codes.InvalidArgument, reason))
 	}
 
 	order, err := a.store.Create(ctx, req.GetCustomerId(), items)

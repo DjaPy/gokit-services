@@ -65,20 +65,26 @@ func toResponse(o Order) orderResponse {
 	}
 }
 
+// maxCreateBodyBytes bounds the POST /orders request body so a single request
+// can't force the server to buffer an unbounded payload.
+const maxCreateBodyBytes = 64 << 10 // 64 KiB
+
 func (a *HTTPAPI) handleCreate(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxCreateBodyBytes)
+
 	var req createOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.CustomerID == "" || len(req.Items) == 0 {
-		writeError(w, http.StatusBadRequest, "customer_id and items are required")
 		return
 	}
 
 	items := make([]Item, 0, len(req.Items))
 	for _, it := range req.Items {
 		items = append(items, Item(it))
+	}
+	if reason, ok := ValidateNewOrder(req.CustomerID, items); !ok {
+		writeError(w, http.StatusBadRequest, reason)
+		return
 	}
 
 	order, err := a.store.Create(r.Context(), req.CustomerID, items)

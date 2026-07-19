@@ -54,11 +54,16 @@ func (p *OrderProcessor) process(ctx context.Context, orderID string) {
 	case <-time.After(p.processDelay):
 	}
 
-	if err := p.store.ConfirmPending(ctx, orderID); err != nil {
+	confirmed, err := p.store.ConfirmPending(ctx, orderID)
+	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
 		slog.Error("order processing failed", "order_id", orderID, "error", err)
+		return
+	}
+	if !confirmed {
+		slog.Info("order no longer pending, skipped", "order_id", orderID)
 		return
 	}
 	slog.Info("order confirmed", "order_id", orderID)

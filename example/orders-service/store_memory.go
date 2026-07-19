@@ -62,19 +62,19 @@ func (s *InMemoryStore) List(_ context.Context) ([]Order, error) {
 	return out, nil
 }
 
-func (s *InMemoryStore) ConfirmPending(_ context.Context, id string) error {
+func (s *InMemoryStore) ConfirmPending(_ context.Context, id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	o, ok := s.orders[id]
 	if !ok {
-		return ErrOrderNotFound
+		return false, ErrOrderNotFound
 	}
 	if o.Status != StatusPending {
-		return nil
+		return false, nil
 	}
 	o.Status = StatusConfirmed
 	o.UpdatedAt = time.Now()
-	return nil
+	return true, nil
 }
 
 func (s *InMemoryStore) CancelStalePending(_ context.Context, cutoff time.Time) ([]string, error) {

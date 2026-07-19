@@ -1,4 +1,4 @@
-package orders
+package store
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	orders "github.com/DjaPy/gokit-services/example/orders-service"
 )
 
 // redisProvider yields the currently-connected Redis client, or nil before
@@ -20,14 +22,14 @@ type redisProvider interface {
 	Client() *redis.Client
 }
 
-// CachingStore decorates a Store with a Redis read-through cache for single
-// Get lookups. A Redis outage never breaks a read: every cache path falls
-// back to the inner Store. Cache consistency is best-effort — mutations
+// CachingStore decorates an orders.Store with a Redis read-through cache for
+// single Get lookups. A Redis outage never breaks a read: every cache path
+// falls back to the inner Store. Cache consistency is best-effort — mutations
 // invalidate the affected keys and the TTL is the backstop. The embedded
 // Store provides Create/List unchanged; only Get and the invalidating
 // mutations are overridden.
 type CachingStore struct {
-	Store
+	orders.Store
 	provider redisProvider
 	ttl      time.Duration
 	logger   *slog.Logger
@@ -35,7 +37,7 @@ type CachingStore struct {
 
 // NewCachingStore wraps inner with a Redis read-through cache drawn from
 // provider, expiring entries after ttl.
-func NewCachingStore(inner Store, provider redisProvider, ttl time.Duration) *CachingStore {
+func NewCachingStore(inner orders.Store, provider redisProvider, ttl time.Duration) *CachingStore {
 	return &CachingStore{Store: inner, provider: provider, ttl: ttl, logger: slog.Default()}
 }
 
@@ -46,7 +48,7 @@ func cacheKey(id string) string { return "order:" + id }
 // through to the inner Store.
 func (s *CachingStore) client() *redis.Client { return s.provider.Client() }
 
-func (s *CachingStore) Get(ctx context.Context, id string) (Order, error) {
+func (s *CachingStore) Get(ctx context.Context, id string) (orders.Order, error) {
 	c := s.client()
 	if c == nil {
 		return s.getFromStore(ctx, id)
@@ -54,18 +56,18 @@ func (s *CachingStore) Get(ctx context.Context, id string) (Order, error) {
 
 	key := cacheKey(id)
 	if cached, err := c.Get(ctx, key).Bytes(); err == nil {
-		var o Order
+		var o orders.Order
 		if json.Unmarshal(cached, &o) == nil {
 			return o, nil
 		}
-		// Corrupt cache entry: fall through to the store and refresh below.
+
 	} else if !errors.Is(err, redis.Nil) {
 		s.logger.Warn("orders: cache get", "order_id", id, "error", err)
 	}
 
 	o, err := s.getFromStore(ctx, id)
 	if err != nil {
-		return Order{}, err
+		return orders.Order{}, err
 	}
 	if payload, mErr := json.Marshal(o); mErr == nil {
 		if sErr := c.Set(ctx, key, payload, s.ttl).Err(); sErr != nil {
@@ -77,20 +79,21 @@ func (s *CachingStore) Get(ctx context.Context, id string) (Order, error) {
 
 // getFromStore reads through to the embedded Store. Its error (including
 // ErrOrderNotFound, which is not cached) is wrapped once here.
-func (s *CachingStore) getFromStore(ctx context.Context, id string) (Order, error) {
+func (s *CachingStore) getFromStore(ctx context.Context, id string) (orders.Order, error) {
 	o, err := s.Store.Get(ctx, id)
 	if err != nil {
-		return Order{}, fmt.Errorf("caching store: get: %w", err)
+		return orders.Order{}, fmt.Errorf("caching store: get: %w", err)
 	}
 	return o, nil
 }
 
-func (s *CachingStore) ConfirmPending(ctx context.Context, id string) error {
-	if err := s.Store.ConfirmPending(ctx, id); err != nil {
-		return fmt.Errorf("caching store: confirm: %w", err)
+func (s *CachingStore) ConfirmPending(ctx context.Context, id string) (bool, error) {
+	confirmed, err := s.Store.ConfirmPending(ctx, id)
+	if err != nil {
+		return false, fmt.Errorf("caching store: confirm: %w", err)
 	}
 	s.invalidate(ctx, id)
-	return nil
+	return confirmed, nil
 }
 
 func (s *CachingStore) CancelStalePending(ctx context.Context, cutoff time.Time) ([]string, error) {

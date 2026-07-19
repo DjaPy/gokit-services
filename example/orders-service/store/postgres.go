@@ -1,4 +1,8 @@
-package orders
+// Package store holds the infrastructure-backed orders.Store adapters
+// (PostgreSQL, Redis cache, Kafka event publishing). Keeping them out of the
+// orders package means a consumer that only wants the domain and the in-memory
+// store does not transitively pull in pgx, redis, or kafka.
+package store
 
 import (
 	"context"
@@ -9,10 +13,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	orders "github.com/DjaPy/gokit-services/example/orders-service"
 )
 
-// PostgresStore is a Store backed by a PostgreSQL table. It reads the live
-// *pgxpool.Pool from a poolProvider (satisfied by *dbservice.Service) on
+// PostgresStore is an orders.Store backed by a PostgreSQL table. It reads the
+// live *pgxpool.Pool from a poolProvider (satisfied by *dbservice.Service) on
 // every call rather than capturing it once, so it tolerates the pool being
 // established asynchronously after Start — Create/Get/etc. return an error
 // until the pool is connected instead of dereferencing nil.
@@ -72,14 +78,14 @@ CREATE TABLE IF NOT EXISTS orders (
 	return nil
 }
 
-func (s *PostgresStore) Create(ctx context.Context, customerID string, items []Item) (Order, error) {
+func (s *PostgresStore) Create(ctx context.Context, customerID string, items []orders.Item) (orders.Order, error) {
 	p, err := s.db()
 	if err != nil {
-		return Order{}, err
+		return orders.Order{}, err
 	}
 	itemsJSON, err := json.Marshal(items)
 	if err != nil {
-		return Order{}, fmt.Errorf("postgres store: marshal items: %w", err)
+		return orders.Order{}, fmt.Errorf("postgres store: marshal items: %w", err)
 	}
 
 	var q = `
@@ -87,31 +93,31 @@ INSERT INTO orders (id, customer_id, items, status, created_at, updated_at)
 VALUES ('ord_' || nextval('orders_id_seq'), $1, $2, $3, now(), now())
 RETURNING id, created_at, updated_at`
 
-	o := Order{CustomerID: customerID, Items: items, Status: StatusPending}
-	if err := p.QueryRow(ctx, q, customerID, itemsJSON, StatusPending).
+	o := orders.Order{CustomerID: customerID, Items: items, Status: orders.StatusPending}
+	if err := p.QueryRow(ctx, q, customerID, itemsJSON, orders.StatusPending).
 		Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt); err != nil {
-		return Order{}, fmt.Errorf("postgres store: create: %w", err)
+		return orders.Order{}, fmt.Errorf("postgres store: create: %w", err)
 	}
 	return o, nil
 }
 
-func (s *PostgresStore) Get(ctx context.Context, id string) (Order, error) {
+func (s *PostgresStore) Get(ctx context.Context, id string) (orders.Order, error) {
 	p, err := s.db()
 	if err != nil {
-		return Order{}, err
+		return orders.Order{}, err
 	}
 	var q = `SELECT id, customer_id, items, status, created_at, updated_at FROM orders WHERE id = $1`
 	o, err := scanOrder(p.QueryRow(ctx, q, id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Order{}, ErrOrderNotFound
+		return orders.Order{}, orders.ErrOrderNotFound
 	}
 	if err != nil {
-		return Order{}, fmt.Errorf("postgres store: get: %w", err)
+		return orders.Order{}, fmt.Errorf("postgres store: get: %w", err)
 	}
 	return o, nil
 }
 
-func (s *PostgresStore) List(ctx context.Context) ([]Order, error) {
+func (s *PostgresStore) List(ctx context.Context) ([]orders.Order, error) {
 	p, err := s.db()
 	if err != nil {
 		return nil, err
@@ -123,7 +129,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]Order, error) {
 	}
 	defer rows.Close()
 
-	var out []Order
+	var out []orders.Order
 	for rows.Next() {
 		o, err := scanOrder(rows)
 		if err != nil {
@@ -137,29 +143,29 @@ func (s *PostgresStore) List(ctx context.Context) ([]Order, error) {
 	return out, nil
 }
 
-func (s *PostgresStore) ConfirmPending(ctx context.Context, id string) error {
+func (s *PostgresStore) ConfirmPending(ctx context.Context, id string) (bool, error) {
 	p, err := s.db()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	const q = `UPDATE orders SET status = $1, updated_at = now() WHERE id = $2 AND status = $3`
-	tag, err := p.Exec(ctx, q, StatusConfirmed, id, StatusPending)
+	tag, err := p.Exec(ctx, q, orders.StatusConfirmed, id, orders.StatusPending)
 	if err != nil {
-		return fmt.Errorf("postgres store: confirm: %w", err)
+		return false, fmt.Errorf("postgres store: confirm: %w", err)
 	}
 	if tag.RowsAffected() > 0 {
-		return nil
+		return true, nil
 	}
 
 	var exists bool
 	if err := p.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM orders WHERE id = $1)`, id).Scan(&exists); err != nil {
-		return fmt.Errorf("postgres store: confirm existence check: %w", err)
+		return false, fmt.Errorf("postgres store: confirm existence check: %w", err)
 	}
 	if !exists {
-		return ErrOrderNotFound
+		return false, orders.ErrOrderNotFound
 	}
-	return nil
+	return false, nil
 }
 
 func (s *PostgresStore) CancelStalePending(ctx context.Context, cutoff time.Time) ([]string, error) {
@@ -171,7 +177,7 @@ func (s *PostgresStore) CancelStalePending(ctx context.Context, cutoff time.Time
 UPDATE orders SET status = $1, updated_at = now()
 WHERE status = $2 AND created_at < $3
 RETURNING id`
-	rows, err := p.Query(ctx, q, StatusCanceled, StatusPending, cutoff)
+	rows, err := p.Query(ctx, q, orders.StatusCanceled, orders.StatusPending, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("postgres store: cancel stale: %w", err)
 	}
@@ -192,18 +198,18 @@ RETURNING id`
 }
 
 // scanOrder decodes one row (id, customer_id, items, status, created_at,
-// updated_at) into an Order, unmarshaling the JSONB items column.
-func scanOrder(row pgx.Row) (Order, error) {
+// updated_at) into an orders.Order, unmarshaling the JSONB items column.
+func scanOrder(row pgx.Row) (orders.Order, error) {
 	var (
-		o         Order
+		o         orders.Order
 		itemsJSON []byte
 	)
 	if err := row.Scan(&o.ID, &o.CustomerID, &itemsJSON, &o.Status, &o.CreatedAt, &o.UpdatedAt); err != nil {
 		// Wrapped with %w so callers can still errors.Is(..., pgx.ErrNoRows).
-		return Order{}, fmt.Errorf("scan order row: %w", err)
+		return orders.Order{}, fmt.Errorf("scan order row: %w", err)
 	}
 	if err := json.Unmarshal(itemsJSON, &o.Items); err != nil {
-		return Order{}, fmt.Errorf("unmarshal items for order %s: %w", o.ID, err)
+		return orders.Order{}, fmt.Errorf("unmarshal items for order %s: %w", o.ID, err)
 	}
 	return o, nil
 }

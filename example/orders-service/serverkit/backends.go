@@ -13,7 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/DjaPy/gokit-services/dbservice"
-	orders "github.com/DjaPy/gokit-services/example/orders-service"
+	"github.com/DjaPy/gokit-services/example/orders-service"
+	"github.com/DjaPy/gokit-services/example/orders-service/store"
 	"github.com/DjaPy/gokit-services/kafka/consumer"
 	"github.com/DjaPy/gokit-services/kafka/producer"
 	"github.com/DjaPy/gokit-services/redisservice"
@@ -47,7 +48,7 @@ type Backends struct {
 	Store    orders.Store
 	Optional []ManagedService
 
-	pg        *orders.PostgresStore
+	pg        *store.PostgresStore
 	db        *dbservice.Service
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -67,7 +68,7 @@ func NewBackends(registry prometheus.Registerer) *Backends {
 			dbservice.WithAppName(appName),
 			dbservice.WithPrometheusRegisterer(registry),
 		)
-		b.pg = orders.NewPostgresStore(b.db)
+		b.pg = store.NewPostgresStore(b.db)
 		b.Store = b.pg
 		b.Optional = append(b.Optional, b.db)
 		slog.Info("orders-service store backend", "backend", "postgres")
@@ -82,7 +83,7 @@ func NewBackends(registry prometheus.Registerer) *Backends {
 			redisservice.WithAppName(appName),
 			redisservice.WithPrometheusRegisterer(registry),
 		)
-		b.Store = orders.NewCachingStore(b.Store, redis, cacheTTL)
+		b.Store = store.NewCachingStore(b.Store, redis, cacheTTL)
 		b.Optional = append(b.Optional, redis)
 		slog.Info("orders-service cache backend", "backend", "redis")
 	}
@@ -93,7 +94,7 @@ func NewBackends(registry prometheus.Registerer) *Backends {
 			producer.WithAppName(appName),
 			producer.WithPrometheusRegisterer(registry),
 		)
-		b.Store = orders.NewPublishingStore(b.Store, orders.NewKafkaPublisher(prod, orders.OrdersEventsTopic))
+		b.Store = orders.NewPublishingStore(b.Store, store.NewKafkaPublisher(prod, orders.OrdersEventsTopic))
 
 		cons := consumer.New(brokers, appName,
 			consumer.WithAppName(appName),
