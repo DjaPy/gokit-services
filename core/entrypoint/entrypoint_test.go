@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/DjaPy/gokit-services/entrypoint"
-	"github.com/DjaPy/gokit-services/service"
+	"github.com/DjaPy/gokit-services/core/entrypoint"
+	"github.com/DjaPy/gokit-services/core/service"
 )
 
 // trackingService records Start/Stop calls and blocks in Start until ctx is canceled.

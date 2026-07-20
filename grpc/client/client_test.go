@@ -1,4 +1,4 @@
-package grpcclient_test
+package client_test
 
 import (
 	"context"
@@ -11,15 +11,15 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/DjaPy/gokit-services/grpcclient"
-	"github.com/DjaPy/gokit-services/grpcserver"
+	grpccli "github.com/DjaPy/gokit-services/grpc/client"
+	grpcsrv "github.com/DjaPy/gokit-services/grpc/server"
 )
 
 func TestGrpcClient_ConnAvailableAfterStart(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 	stopTimeout := 500 * time.Millisecond
 
-	srv := grpcserver.NewServer(grpcserver.WithPort(0), grpcserver.WithHost("127.0.0.1"))
+	srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
 	srvCtx, srvCancel := context.WithCancel(context.Background())
 	defer srvCancel()
 	go srv.Start(srvCtx) //nolint:errcheck
@@ -28,8 +28,8 @@ func TestGrpcClient_ConnAvailableAfterStart(t *testing.T) {
 		return srv.Addr() != "127.0.0.1:0"
 	}, startTimeout, time.Millisecond)
 
-	c := grpcclient.NewClient(srv.Addr(),
-		grpcclient.WithDialOptions(grpclib.WithTransportCredentials(insecure.NewCredentials())),
+	c := grpccli.NewClient(srv.Addr(),
+		grpccli.WithDialOptions(grpclib.WithTransportCredentials(insecure.NewCredentials())),
 	)
 
 	assert.Nil(t, c.Conn(), "Conn() must be nil before Start")
@@ -57,7 +57,7 @@ func TestGrpcClient_StopClosesConn(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 	stopTimeout := 500 * time.Millisecond
 
-	srv := grpcserver.NewServer(grpcserver.WithPort(0), grpcserver.WithHost("127.0.0.1"))
+	srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
 	srvCtx, srvCancel := context.WithCancel(context.Background())
 	defer srvCancel()
 	go srv.Start(srvCtx) //nolint:errcheck
@@ -66,8 +66,8 @@ func TestGrpcClient_StopClosesConn(t *testing.T) {
 		return srv.Addr() != "127.0.0.1:0"
 	}, startTimeout, time.Millisecond)
 
-	c := grpcclient.NewClient(srv.Addr(),
-		grpcclient.WithDialOptions(grpclib.WithTransportCredentials(insecure.NewCredentials())),
+	c := grpccli.NewClient(srv.Addr(),
+		grpccli.WithDialOptions(grpclib.WithTransportCredentials(insecure.NewCredentials())),
 	)
 
 	clientCtx, clientCancel := context.WithCancel(context.Background())

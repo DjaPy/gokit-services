@@ -1,6 +1,6 @@
 // Package dbservice provides a managed PostgreSQL connection pool
 // implementing service.Service, service.Shutdown, and service.Prober.
-// Unlike httpserver/grpcserver, Start retries with exponential backoff
+// Unlike http/server and grpc/server, Start retries with exponential backoff
 // instead of failing fast, since database unavailability at process
 // startup is typically a transient condition.
 package dbservice
@@ -139,7 +139,7 @@ func connectOnce(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error
 }
 
 // Start establishes the connection pool, retrying with exponential backoff
-// on failure, then blocks until ctx is canceled. Unlike httpserver/grpcserver,
+// on failure, then blocks until ctx is canceled. Unlike http/server and grpc/server,
 // it does not fail fast — database unavailability at startup is treated as
 // a transient condition bounded by the retry policy and ctx.
 func (s *Service) Start(ctx context.Context) error {

@@ -1,6 +1,6 @@
 // Package redisservice provides a managed Redis client implementing
 // service.Service, service.Shutdown, and service.Prober. Unlike
-// httpserver/grpcserver, Start retries with exponential backoff instead of
+// http/server and grpc/server, Start retries with exponential backoff instead of
 // failing fast, since Redis unavailability at process startup is typically
 // a transient condition.
 package redisservice

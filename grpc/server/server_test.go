@@ -1,4 +1,4 @@
-package grpcserver_test
+package server_test
 
 import (
 	"context"
@@ -11,14 +11,14 @@ import (
 	grpclib "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/DjaPy/gokit-services/grpcserver"
+	grpcsrv "github.com/DjaPy/gokit-services/grpc/server"
 )
 
 func TestGrpcServer_StartStop(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 	stopTimeout := 500 * time.Millisecond
 
-	srv := grpcserver.NewServer(grpcserver.WithPort(0), grpcserver.WithHost("127.0.0.1"))
+	srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -53,14 +53,14 @@ func TestGrpcServer_Addr_BeforeStart(t *testing.T) {
 	port := 19090
 	expectedAddr := "127.0.0.1:19090"
 
-	srv := grpcserver.NewServer(grpcserver.WithHost(host), grpcserver.WithPort(port))
+	srv := grpcsrv.NewServer(grpcsrv.WithHost(host), grpcsrv.WithPort(port))
 	assert.Equal(t, expectedAddr, srv.Addr())
 }
 
 func TestGrpcServer_Addr_AfterStart(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 
-	srv := grpcserver.NewServer(grpcserver.WithPort(0), grpcserver.WithHost("127.0.0.1"))
+	srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -91,7 +91,7 @@ func TestGrpcServer_Stop_GracefulShutdown(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 	stopTimeout := 500 * time.Millisecond
 
-	srv := grpcserver.NewServer(grpcserver.WithPort(0), grpcserver.WithHost("127.0.0.1"))
+	srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -118,7 +118,7 @@ func TestGrpcServer_Stop_GracefulShutdown(t *testing.T) {
 func TestGrpcServer_Stop_ForcefulOnCtxExpiry(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 
-	srv := grpcserver.NewServer(grpcserver.WithPort(0), grpcserver.WithHost("127.0.0.1"))
+	srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -148,7 +148,7 @@ func TestGrpcServer_ContextCancelStops(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 	stopTimeout := 500 * time.Millisecond
 
-	srv := grpcserver.NewServer(grpcserver.WithPort(0), grpcserver.WithHost("127.0.0.1"))
+	srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 

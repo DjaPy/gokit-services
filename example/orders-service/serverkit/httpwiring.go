@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/DjaPy/gokit-services/httpclient"
-	"github.com/DjaPy/gokit-services/httpserver"
+	httpcli "github.com/DjaPy/gokit-services/http/client"
+	httpsrv "github.com/DjaPy/gokit-services/http/server"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -14,7 +14,7 @@ func Addr(dialHost string, port int) string {
 	return fmt.Sprintf("%s:%d", dialHost, port)
 }
 
-// NewHTTPServer builds an httpserver.Server bound on bindHost:port serving
+// NewHTTPServer builds an httpsrv.Server bound on bindHost:port serving
 // handler, with metrics on registry — the shared shape of the API and
 // dashboard servers.
 func NewHTTPServer(
@@ -23,17 +23,17 @@ func NewHTTPServer(
 	appName string,
 	handler http.Handler,
 	registry prometheus.Registerer,
-) *httpserver.Server {
-	return httpserver.NewServer(handler,
-		httpserver.WithHost(bindHost),
-		httpserver.WithPort(port),
-		httpserver.WithAppName(appName),
-		httpserver.WithPrometheusRegisterer(registry),
+) *httpsrv.Server {
+	return httpsrv.NewServer(handler,
+		httpsrv.WithHost(bindHost),
+		httpsrv.WithPort(port),
+		httpsrv.WithAppName(appName),
+		httpsrv.WithPrometheusRegisterer(registry),
 	)
 }
 
-func MustHTTPClient(baseURL string) *httpclient.Client {
-	c, err := httpclient.New(baseURL)
+func MustHTTPClient(baseURL string) *httpcli.Client {
+	c, err := httpcli.New(baseURL)
 	if err != nil {
 		panic(err)
 	}

@@ -22,7 +22,7 @@ func NewHTTPAPI(store Store, processor *OrderProcessor) *HTTPAPI {
 	return &HTTPAPI{store: store, processor: processor}
 }
 
-// Mux builds the http.Handler for httpserver.NewServer.
+// Mux builds the http.Handler for httpsrv.NewServer.
 func (a *HTTPAPI) Mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /orders", a.handleCreate)

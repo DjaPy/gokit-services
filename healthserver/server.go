@@ -10,16 +10,16 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/DjaPy/gokit-services/httpserver"
-	"github.com/DjaPy/gokit-services/service"
+	"github.com/DjaPy/gokit-services/core/service"
+	httpsrv "github.com/DjaPy/gokit-services/http/server"
 )
 
 // Server is an HTTP server exposing /healthz (liveness) and /readyz (readiness).
-// All traffic is delegated to an internal httpserver.Server.
+// All traffic is delegated to an internal httpsrv.Server.
 type Server struct {
 	probers []service.Prober
 	logger  *slog.Logger
-	inner   *httpserver.Server
+	inner   *httpsrv.Server
 }
 
 type config struct {
@@ -80,24 +80,24 @@ func New(opts ...Option) *Server {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 
-	var httpOpts []httpserver.Option
+	var httpOpts []httpsrv.Option
 	if cfg.port != 0 {
-		httpOpts = append(httpOpts, httpserver.WithPort(cfg.port))
+		httpOpts = append(httpOpts, httpsrv.WithPort(cfg.port))
 	}
 	if cfg.host != "" {
-		httpOpts = append(httpOpts, httpserver.WithHost(cfg.host))
+		httpOpts = append(httpOpts, httpsrv.WithHost(cfg.host))
 	}
 	if cfg.appName != "" {
-		httpOpts = append(httpOpts, httpserver.WithAppName(cfg.appName))
+		httpOpts = append(httpOpts, httpsrv.WithAppName(cfg.appName))
 	}
 	if cfg.registerer != nil {
-		httpOpts = append(httpOpts, httpserver.WithPrometheusRegisterer(cfg.registerer))
+		httpOpts = append(httpOpts, httpsrv.WithPrometheusRegisterer(cfg.registerer))
 	}
 	if cfg.logger != nil {
-		httpOpts = append(httpOpts, httpserver.WithLogger(cfg.logger))
+		httpOpts = append(httpOpts, httpsrv.WithLogger(cfg.logger))
 	}
 
-	s.inner = httpserver.NewServer(mux, httpOpts...)
+	s.inner = httpsrv.NewServer(mux, httpOpts...)
 	return s
 }
 

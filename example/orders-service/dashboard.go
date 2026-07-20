@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DjaPy/gokit-services/grpcclient"
-	"github.com/DjaPy/gokit-services/httpclient"
+	grpccli "github.com/DjaPy/gokit-services/grpc/client"
+	httpcli "github.com/DjaPy/gokit-services/http/client"
 
 	ordersv1 "github.com/DjaPy/gokit-services/example/orders-service/proto"
 )
@@ -25,25 +25,25 @@ var dashboardStatic embed.FS
 
 // Dashboard is an htmx-powered UI that exercises every transport this
 // example exposes. It deliberately holds no reference to Store: order
-// creation and listing go through the REST API via httpclient.Client
+// creation and listing go through the REST API via httpcli.Client
 // exactly as an external caller would, order listing is also available
-// through a live grpcclient.Client connection to grpcserver, and liveness
-// is read from healthserver over the same kind of httpclient call. The
+// through a live grpccli.Client connection to the grpc/server, and liveness
+// is read from healthserver over the same kind of http/client call. The
 // dashboard is a client of the other services, not a shortcut around them.
 type Dashboard struct {
-	restClient   *httpclient.Client
-	healthClient *httpclient.Client
-	grpcClient   *grpcclient.Client
+	restClient   *httpcli.Client
+	healthClient *httpcli.Client
+	grpcClient   *grpccli.Client
 }
 
 // NewDashboard wires the dashboard to already-constructed clients. grpcClient
 // may still be mid-connection when requests arrive — handlers check
 // grpcClient.Conn() per-request rather than requiring it upfront.
-func NewDashboard(restClient, healthClient *httpclient.Client, grpcClient *grpcclient.Client) *Dashboard {
+func NewDashboard(restClient, healthClient *httpcli.Client, grpcClient *grpccli.Client) *Dashboard {
 	return &Dashboard{restClient: restClient, healthClient: healthClient, grpcClient: grpcClient}
 }
 
-// Mux builds the http.Handler for httpserver.NewServer.
+// Mux builds the http.Handler for httpsrv.NewServer.
 func (d *Dashboard) Mux() http.Handler {
 	mux := http.NewServeMux()
 	staticFS, err := fs.Sub(dashboardStatic, "static")
@@ -105,7 +105,7 @@ func relTime(t time.Time) string {
 func (d *Dashboard) fetchOrders(ctx context.Context) ([]orderResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	return httpclient.Do[[]orderResponse](ctx, d.restClient, http.MethodGet, "/orders")
+	return httpcli.Do[[]orderResponse](ctx, d.restClient, http.MethodGet, "/orders")
 }
 
 func (d *Dashboard) handleStatsPartial(w http.ResponseWriter, r *http.Request) {
@@ -183,8 +183,8 @@ func (d *Dashboard) handleCreatePartial(w http.ResponseWriter, r *http.Request) 
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	if _, err := httpclient.Do[orderResponse](ctx, d.restClient, http.MethodPost, "/orders",
-		httpclient.WithBody(bytes.NewReader(body), "application/json"),
+	if _, err := httpcli.Do[orderResponse](ctx, d.restClient, http.MethodPost, "/orders",
+		httpcli.WithBody(bytes.NewReader(body), "application/json"),
 	); err != nil {
 		slog.Error("dashboard: create order via REST API", "error", err)
 	}
@@ -239,13 +239,13 @@ func (d *Dashboard) handleHealthPartial(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	live, liveOK := "unreachable", false
-	if resp, err := httpclient.Do[healthStatus](ctx, d.healthClient, http.MethodGet, "/healthz"); err == nil {
+	if resp, err := httpcli.Do[healthStatus](ctx, d.healthClient, http.MethodGet, "/healthz"); err == nil {
 		live, liveOK = resp.Status, true
 	}
 
 	var ready string
 	var readyOK bool
-	if resp, err := httpclient.Do[healthStatus](ctx, d.healthClient, http.MethodGet, "/readyz"); err == nil {
+	if resp, err := httpcli.Do[healthStatus](ctx, d.healthClient, http.MethodGet, "/readyz"); err == nil {
 		ready, readyOK = resp.Status, true
 	} else {
 		ready = err.Error()
@@ -326,7 +326,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
       <section class="card">
         <div class="card-head"><h2>Create order</h2></div>
         <div class="card-body">
-          <p class="hint">POSTs to the REST API via <code>httpclient</code>; the handler enqueues async confirmation on <code>workerpool</code>.</p>
+          <p class="hint">POSTs to the REST API via <code>http/client</code>; the handler enqueues async confirmation on <code>workerpool</code>.</p>
           <form hx-post="/partials/orders" hx-include="#current-source" hx-target="#orders-panel" hx-swap="innerHTML">
             <label>Customer ID
               <input type="text" name="customer_id" value="cust_1" required>
@@ -349,7 +349,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
           <span class="refresh">every 3s</span>
         </div>
         <div class="card-body">
-          <p class="hint">Polls <code>/healthz</code> and <code>/readyz</code> on healthserver via <code>httpclient</code>. Readiness flips once the periodic cleanup job has swept at least once.</p>
+          <p class="hint">Polls <code>/healthz</code> and <code>/readyz</code> on healthserver via <code>http/client</code>. Readiness flips once the periodic cleanup job has swept at least once.</p>
           <div id="health" hx-get="/partials/health" hx-trigger="load, every 3s" hx-swap="innerHTML">Loading&hellip;</div>
         </div>
       </section>
@@ -387,9 +387,9 @@ var ordersPanelTmpl = template.Must(template.New("orders-panel").Parse(`
 </div>
 <div class="card-body">
   {{ if eq .Source "rest" -}}
-  <p class="hint">Polled every 2s via <code>httpclient.Do[T]</code> against the REST API.</p>
+  <p class="hint">Polled every 2s via <code>httpcli.Do[T]</code> against the REST API.</p>
   {{- else -}}
-  <p class="hint">Live <code>OrdersService/ListOrders</code> call over <code>grpcclient</code> &mdash; the same Store as the REST view. Click the source button again to refresh.</p>
+  <p class="hint">Live <code>OrdersService/ListOrders</code> call over <code>grpc/client</code> &mdash; the same Store as the REST view. Click the source button again to refresh.</p>
   {{- end }}
   {{ if .Error -}}
   <p class="error">{{ .Error }}</p>

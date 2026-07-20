@@ -1,7 +1,7 @@
 // Package retry provides a generic exponential-backoff retry helper used by
 // managed infrastructure clients (dbservice, kafkaproducer, kafkaconsumer,
 // redisservice) that connect to external dependencies at Start — unlike
-// httpserver/grpcserver, those are expected to retry transient startup
+// http/server and grpc/server, those are expected to retry transient startup
 // failures rather than fail fast.
 package retry
 

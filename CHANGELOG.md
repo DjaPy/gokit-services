@@ -8,6 +8,26 @@
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: реорганизована раскладка пакетов — транспорты сгруппированы по протоколу
+  (по образцу `kafka/`), а контрактно-оркестрационный слой вынесен в `core/`. Поведение,
+  публичные API, сигнатуры и метрики не изменились — обновить нужно только пути импорта:
+
+  | Старый путь | Новый путь |
+  |-------------|------------|
+  | `github.com/DjaPy/gokit-services/service` | `github.com/DjaPy/gokit-services/core/service` |
+  | `github.com/DjaPy/gokit-services/entrypoint` | `github.com/DjaPy/gokit-services/core/entrypoint` |
+  | `github.com/DjaPy/gokit-services/httpserver` | `github.com/DjaPy/gokit-services/http/server` |
+  | `github.com/DjaPy/gokit-services/httpclient` | `github.com/DjaPy/gokit-services/http/client` |
+  | `github.com/DjaPy/gokit-services/grpcserver` | `github.com/DjaPy/gokit-services/grpc/server` |
+  | `github.com/DjaPy/gokit-services/grpcclient` | `github.com/DjaPy/gokit-services/grpc/client` |
+
+  Имена пакетов `service` и `entrypoint` сохранены (меняется только путь). Транспортные
+  подпакеты теперь называются `server`/`client` — импортировать их рекомендуется с алиасами
+  (`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`), чтобы избежать коллизий и конфликта имени с
+  stdlib `net/http`. `kafka/` и инфраструктурные сервисы (`healthserver`, `periodic`,
+  `workerpool`, `dbservice`, `redisservice`) не затронуты.
+
 ## [0.3.0] - 2026-07-18
 
 ### Added

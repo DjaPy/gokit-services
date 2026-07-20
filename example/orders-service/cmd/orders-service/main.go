@@ -9,14 +9,14 @@ import (
 	grpclib "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/DjaPy/gokit-services/entrypoint"
+	"github.com/DjaPy/gokit-services/core/entrypoint"
+	"github.com/DjaPy/gokit-services/core/service"
 	"github.com/DjaPy/gokit-services/example/orders-service"
 	ordersv1 "github.com/DjaPy/gokit-services/example/orders-service/proto"
 	"github.com/DjaPy/gokit-services/example/orders-service/serverkit"
-	"github.com/DjaPy/gokit-services/grpcclient"
-	"github.com/DjaPy/gokit-services/grpcserver"
+	grpccli "github.com/DjaPy/gokit-services/grpc/client"
+	grpcsrv "github.com/DjaPy/gokit-services/grpc/server"
 	"github.com/DjaPy/gokit-services/healthserver"
-	"github.com/DjaPy/gokit-services/service"
 )
 
 const (
@@ -43,12 +43,12 @@ func main() {
 
 	httpSrv := serverkit.NewHTTPServer(bindHost, httpPort, "orders-service", orders.NewHTTPAPI(backend.Store, processor).Mux(), registry)
 
-	grpcSrv := grpcserver.NewServer(grpcserver.WithPort(grpcPort))
+	grpcSrv := grpcsrv.NewServer(grpcsrv.WithPort(grpcPort))
 	ordersv1.RegisterOrdersServiceServer(grpcSrv.GRPCServer(), orders.NewGRPCAPI(backend.Store, processor))
 
 	healthAddr := serverkit.Addr(dialHost, healthPort)
-	grpcClient := grpcclient.NewClient(serverkit.Addr(dialHost, grpcPort),
-		grpcclient.WithDialOptions(grpclib.WithTransportCredentials(insecure.NewCredentials())),
+	grpcClient := grpccli.NewClient(serverkit.Addr(dialHost, grpcPort),
+		grpccli.WithDialOptions(grpclib.WithTransportCredentials(insecure.NewCredentials())),
 	)
 	dashboard := orders.NewDashboard(
 		serverkit.MustHTTPClient("http://"+serverkit.Addr(dialHost, httpPort)),

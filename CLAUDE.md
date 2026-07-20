@@ -5,15 +5,25 @@
 ## Структура
 
 ```
-entrypoint/   — жизненный цикл приложения
-httpserver/   — HTTP сервер с Prometheus и panic recovery
-httpclient/   — HTTP клиент с middleware chain
-grpcserver/   — gRPC сервер
-grpcclient/   — gRPC клиент
-service/      — интерфейсы Service и Shutdown
+core/
+  entrypoint/   — жизненный цикл приложения
+  service/      — интерфейсы Service, Shutdown, Prober
+http/
+  server/       — HTTP сервер с Prometheus и panic recovery (package server)
+  client/       — HTTP клиент с middleware chain (package client)
+grpc/
+  server/       — gRPC сервер (package server)
+  client/       — gRPC клиент (package client)
+kafka/          — dialer/TLS/SASL + подпакеты producer/ и consumer/
 ```
 
-## Интерфейсы (service/)
+Транспорты сгруппированы по протоколу, а контрактно-оркестрационный слой
+вынесен в `core/`. Подпакеты `server`/`client` рекомендуется импортировать с алиасами
+(`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`) — это снимает коллизии генеричных имён и
+конфликт с stdlib `net/http`. Инфраструктурные сервисы (`healthserver`, `periodic`,
+`workerpool`, `dbservice`, `redisservice`) остаются пакетами верхнего уровня.
+
+## Интерфейсы (core/service)
 
 ```go
 type Service interface {
@@ -32,6 +42,8 @@ type Shutdown interface {
 Порядок: PreStart hooks → Start (параллельно) → PostStart hooks → ожидание → PreStop hooks → Stop (параллельно) → PostStop hooks.
 
 ```go
+import "github.com/DjaPy/gokit-services/core/entrypoint"
+
 ep := entrypoint.New(
     entrypoint.WithServices(httpSrv, grpcSrv),
     entrypoint.WithShutdownTimeout(30 * time.Second),
@@ -40,7 +52,7 @@ ep := entrypoint.New(
 ep.Run(ctx)
 ```
 
-## httpserver
+## http/server
 
 HTTP сервер реализует `service.Service` и `service.Shutdown`. Автоматически собирает Prometheus метрики и восстанавливается после паники.
 
@@ -49,12 +61,14 @@ HTTP сервер реализует `service.Service` и `service.Shutdown`. А
 **Важно:** Всегда передавать `WithPrometheusRegisterer(prometheus.NewRegistry())` в тестах — иначе второй `NewServer` с дефолтным регистратором паникует на дублирующейся регистрации метрик. В продакшне использовать один `NewServer` на процесс или свой `Registerer`.
 
 ```go
+import httpsrv "github.com/DjaPy/gokit-services/http/server"
+
 mux := http.NewServeMux()
 mux.HandleFunc("GET /health", healthHandler)
 
-srv := httpserver.NewServer(mux,
-    httpserver.WithPort(8080),
-    httpserver.WithAppName("my-svc"),
+srv := httpsrv.NewServer(mux,
+    httpsrv.WithPort(8080),
+    httpsrv.WithAppName("my-svc"),
 )
 ```
 
@@ -62,18 +76,20 @@ srv := httpserver.NewServer(mux,
 
 `responseWriter` пробрасывает `http.Flusher` и `http.Hijacker` — SSE и WebSocket работают корректно.
 
-## httpclient
+## http/client
 
 HTTP клиент с фиксированным base URL и middleware chain. Дженерик `Do[T]` декодирует JSON-ответ в T.
 
 ```go
-c, err := httpclient.New("https://api.example.com",
-    httpclient.WithTimeout(10 * time.Second),
-    httpclient.WithMiddleware(authMiddleware, tracingMiddleware),
+import httpcli "github.com/DjaPy/gokit-services/http/client"
+
+c, err := httpcli.New("https://api.example.com",
+    httpcli.WithTimeout(10 * time.Second),
+    httpcli.WithMiddleware(authMiddleware, tracingMiddleware),
 )
 
 type User struct { Name string `json:"name"` }
-user, err := httpclient.Do[User](ctx, c, http.MethodGet, "/users/42")
+user, err := httpcli.Do[User](ctx, c, http.MethodGet, "/users/42")
 ```
 
 **`Do[T]`** возвращает ошибку при non-2xx. Для пустого тела (204 No Content) возвращает zero value без ошибки.

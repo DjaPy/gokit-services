@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DjaPy/gokit-services/service"
+	"github.com/DjaPy/gokit-services/core/service"
 )
 
 type hookFn func(ctx context.Context) error
