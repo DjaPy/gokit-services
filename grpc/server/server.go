@@ -101,6 +101,11 @@ func (s *Server) Start(ctx context.Context) error {
 // Stop implements service.Shutdown. It initiates a graceful shutdown; if ctx
 // expires before all RPCs drain, it falls back to a forceful stop.
 func (s *Server) Stop(ctx context.Context, _ error) error {
+	if err := ctx.Err(); err != nil {
+		s.srv.Stop()
+		return fmt.Errorf("grpc server stop: %w", err)
+	}
+
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Go(func() {

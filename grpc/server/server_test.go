@@ -144,6 +144,45 @@ func TestGrpcServer_Stop_ForcefulOnCtxExpiry(t *testing.T) {
 	}
 }
 
+// TestGrpcServer_Stop_ExpiredCtxReportsCtxError pins the ctx.Err() fast-path in
+// Stop: when the deadline is already blown, Stop must skip the graceful attempt
+// and report the ctx's own error — context.Canceled or context.DeadlineExceeded
+// — and never nil.
+
+func TestGrpcServer_Stop_ExpiredCtxReportsCtxError(t *testing.T) {
+	tests := map[string]struct {
+		ctx     func() (context.Context, context.CancelFunc)
+		wantErr error
+	}{
+		"already canceled": {
+			ctx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, cancel
+			},
+			wantErr: context.Canceled,
+		},
+		"deadline exceeded": {
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := grpcsrv.NewServer(grpcsrv.WithPort(0), grpcsrv.WithHost("127.0.0.1"))
+			ctx, cancel := tc.ctx()
+			defer cancel()
+
+			err := srv.Stop(ctx, nil)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestGrpcServer_ContextCancelStops(t *testing.T) {
 	startTimeout := 200 * time.Millisecond
 	stopTimeout := 500 * time.Millisecond
