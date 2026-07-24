@@ -4,26 +4,33 @@ Reusable Go toolkit for microservices. Go 1.26. Module: `github.com/DjaPy/gokit-
 
 ## Structure
 
+All library code lives under `pkg/`; `example/` and `docs/` sit alongside it at the repo root.
+
 ```
-core/
-  entrypoint/   — application lifecycle
-  service/      — Service, Shutdown, Prober interfaces
-http/
-  server/       — HTTP server with Prometheus and panic recovery (package server)
-  client/       — HTTP client with a middleware chain (package client)
-grpc/
-  server/       — gRPC server (package server)
-  client/       — gRPC client (package client)
-kafka/          — dialer/TLS/SASL + producer/ and consumer/ subpackages
+pkg/
+  core/
+    entrypoint/   — application lifecycle
+    service/      — Service, Shutdown, Prober interfaces
+  http/
+    server/       — HTTP server with Prometheus and panic recovery (package server)
+    client/       — HTTP client with a middleware chain (package client)
+  grpc/
+    server/       — gRPC server (package server)
+    client/       — gRPC client (package client)
+  kafka/          — dialer/TLS/SASL + producer/ and consumer/ subpackages
+  healthserver/ periodic/ workerpool/ dbservice/ redisservice/  — infra services
+  internal/       — shared helpers (retry, prom), not importable by consumers
+example/          — runnable orders-service wiring every primitive
+docs/             — SPDD analysis/prompt artifacts
 ```
 
 Transports are grouped by protocol, and the contract/orchestration layer is moved
-into `core/`. The `server`/`client` subpackages are best imported with aliases
+into `pkg/core/`. The `server`/`client` subpackages are best imported with aliases
 (`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`) — this avoids collisions of the generic
 names and the clash with stdlib `net/http`. The infrastructure services (`healthserver`,
-`periodic`, `workerpool`, `dbservice`, `redisservice`) remain top-level packages.
+`periodic`, `workerpool`, `dbservice`, `redisservice`) remain leaf packages under `pkg/`.
 
-## Interfaces (core/service)
+## Interfaces (pkg/core/service)
 
 ```go
 type Service interface {
@@ -31,7 +38,7 @@ type Service interface {
 }
 
 type Shutdown interface {
-    Stop(ctx context.Context, cause error) error  // optional graceful stop
+    Stop(ctx context.Context) error  // optional graceful stop
 }
 ```
 
@@ -42,7 +49,7 @@ Manages the lifecycle of multiple services. Shutdown is triggered by: SIGINT/SIG
 Order: PreStart hooks → Start (concurrently) → PostStart hooks → wait → PreStop hooks → Stop (concurrently) → PostStop hooks.
 
 ```go
-import "github.com/DjaPy/gokit-services/core/entrypoint"
+import "github.com/DjaPy/gokit-services/pkg/core/entrypoint"
 
 ep := entrypoint.New(
     entrypoint.WithServices(httpSrv, grpcSrv),
@@ -61,7 +68,7 @@ The HTTP server implements `service.Service` and `service.Shutdown`. It automati
 **Important:** Always pass `WithPrometheusRegisterer(prometheus.NewRegistry())` in tests — otherwise a second `NewServer` with the default registerer panics on duplicate metric registration. In production, use a single `NewServer` per process or your own `Registerer`.
 
 ```go
-import httpsrv "github.com/DjaPy/gokit-services/http/server"
+import httpsrv "github.com/DjaPy/gokit-services/pkg/http/server"
 
 mux := http.NewServeMux()
 mux.HandleFunc("GET /health", healthHandler)
@@ -81,7 +88,7 @@ A panic in a handler returns an RFC 7807 Problem JSON (`application/problem+json
 HTTP client with a fixed base URL and a middleware chain. The generic `Do[T]` decodes a JSON response into T.
 
 ```go
-import httpcli "github.com/DjaPy/gokit-services/http/client"
+import httpcli "github.com/DjaPy/gokit-services/pkg/http/client"
 
 c, err := httpcli.New("https://api.example.com",
     httpcli.WithTimeout(10 * time.Second),

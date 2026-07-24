@@ -12,13 +12,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/DjaPy/gokit-services/core/service"
-	"github.com/DjaPy/gokit-services/dbservice"
 	"github.com/DjaPy/gokit-services/example/orders-service"
 	"github.com/DjaPy/gokit-services/example/orders-service/store"
-	"github.com/DjaPy/gokit-services/kafka/consumer"
-	"github.com/DjaPy/gokit-services/kafka/producer"
-	"github.com/DjaPy/gokit-services/redisservice"
+	"github.com/DjaPy/gokit-services/pkg/core/service"
+	"github.com/DjaPy/gokit-services/pkg/dbservice"
+	"github.com/DjaPy/gokit-services/pkg/kafka/consumer"
+	"github.com/DjaPy/gokit-services/pkg/kafka/producer"
+	"github.com/DjaPy/gokit-services/pkg/redisservice"
 )
 
 const (

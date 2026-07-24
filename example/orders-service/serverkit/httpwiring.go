@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	httpcli "github.com/DjaPy/gokit-services/http/client"
-	httpsrv "github.com/DjaPy/gokit-services/http/server"
+	httpcli "github.com/DjaPy/gokit-services/pkg/http/client"
+	httpsrv "github.com/DjaPy/gokit-services/pkg/http/server"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

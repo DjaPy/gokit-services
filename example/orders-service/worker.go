@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/DjaPy/gokit-services/workerpool"
+	"github.com/DjaPy/gokit-services/pkg/workerpool"
 )
 
 // OrderProcessor asynchronously "processes" newly created orders — in a

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	grpccli "github.com/DjaPy/gokit-services/grpc/client"
-	httpcli "github.com/DjaPy/gokit-services/http/client"
+	grpccli "github.com/DjaPy/gokit-services/pkg/grpc/client"
+	httpcli "github.com/DjaPy/gokit-services/pkg/http/client"
 
 	ordersv1 "github.com/DjaPy/gokit-services/example/orders-service/proto"
 )

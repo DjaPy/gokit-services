@@ -8,6 +8,43 @@ see the versioning policy in `CLAUDE.md`).
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: all library packages moved under `pkg/`. `example/` and `docs/` stay at the
+  repo root. The module path and versioning are unchanged, but every import path gains a
+  `pkg/` segment — update imports accordingly:
+
+  | Old path | New path |
+  |----------|----------|
+  | `github.com/DjaPy/gokit-services/core/…` | `github.com/DjaPy/gokit-services/pkg/core/…` |
+  | `github.com/DjaPy/gokit-services/http/…` | `github.com/DjaPy/gokit-services/pkg/http/…` |
+  | `github.com/DjaPy/gokit-services/grpc/…` | `github.com/DjaPy/gokit-services/pkg/grpc/…` |
+  | `github.com/DjaPy/gokit-services/kafka/…` | `github.com/DjaPy/gokit-services/pkg/kafka/…` |
+  | `github.com/DjaPy/gokit-services/dbservice` | `github.com/DjaPy/gokit-services/pkg/dbservice` |
+  | `github.com/DjaPy/gokit-services/redisservice` | `github.com/DjaPy/gokit-services/pkg/redisservice` |
+  | `github.com/DjaPy/gokit-services/healthserver` | `github.com/DjaPy/gokit-services/pkg/healthserver` |
+  | `github.com/DjaPy/gokit-services/periodic` | `github.com/DjaPy/gokit-services/pkg/periodic` |
+  | `github.com/DjaPy/gokit-services/workerpool` | `github.com/DjaPy/gokit-services/pkg/workerpool` |
+
+  Package names, public APIs, signatures and metrics are unchanged — only the paths move.
+- **BREAKING**: `service.Shutdown.Stop` drops its `cause error` parameter — the signature is
+  now `Stop(ctx context.Context) error`. No implementation ever consumed `cause`, and the
+  reason shutdown began is already available as `entrypoint.Run`'s return value. Update any
+  `Stop(ctx, cause)` implementations and calls to `Stop(ctx)`.
+- `http/server` — on context cancellation `Start` now drains in-flight requests without a
+  deadline of its own; the shutdown deadline is supplied by `Stop`'s context, mirroring
+  `grpc/server`. Previously the ctx-cancel path applied a hardcoded 5s timeout. Standalone
+  callers relying on ctx cancellation alone now get an unbounded graceful drain — call
+  `Stop(ctx)` with a deadline (or run under `entrypoint`) to bound it.
+
+### Fixed
+- `http/server` — `entrypoint.WithShutdownTimeout` now actually governs HTTP server shutdown.
+  Previously `Start`'s ctx-cancel handler won the race against `Stop` and applied a hardcoded
+  5s deadline, so the configured timeout was ignored. `Stop` now bounds the graceful drain by
+  forcing connections closed (`server.Close`) when its context expires.
+- `http/server` — fixed a goroutine leak: `Start`'s shutdown watcher blocked forever on
+  `ctx.Done()` when the server was stopped via `Stop` without the context being canceled. It
+  is now released when `Serve` returns.
+
 ## [0.4.1] - 2026-07-21
 
 ### Fixed

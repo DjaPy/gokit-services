@@ -9,14 +9,14 @@ import (
 	grpclib "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/DjaPy/gokit-services/core/entrypoint"
-	"github.com/DjaPy/gokit-services/core/service"
 	"github.com/DjaPy/gokit-services/example/orders-service"
 	ordersv1 "github.com/DjaPy/gokit-services/example/orders-service/proto"
 	"github.com/DjaPy/gokit-services/example/orders-service/serverkit"
-	grpccli "github.com/DjaPy/gokit-services/grpc/client"
-	grpcsrv "github.com/DjaPy/gokit-services/grpc/server"
-	"github.com/DjaPy/gokit-services/healthserver"
+	"github.com/DjaPy/gokit-services/pkg/core/entrypoint"
+	"github.com/DjaPy/gokit-services/pkg/core/service"
+	grpccli "github.com/DjaPy/gokit-services/pkg/grpc/client"
+	grpcsrv "github.com/DjaPy/gokit-services/pkg/grpc/server"
+	"github.com/DjaPy/gokit-services/pkg/healthserver"
 )
 
 const (

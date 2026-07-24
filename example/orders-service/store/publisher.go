@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/DjaPy/gokit-services/example/orders-service"
-	"github.com/DjaPy/gokit-services/kafka/producer"
+	"github.com/DjaPy/gokit-services/pkg/kafka/producer"
 )
 
 // KafkaPublisher is an orders.EventPublisher that writes events to Kafka

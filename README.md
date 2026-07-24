@@ -42,8 +42,8 @@ A handful of terms recur across every package:
 
 - **Service** — anything with `Start(ctx) error`. `Start` blocks until the service is fully stopped; the ctx is
   canceled when shutdown begins. This is the only interface a component must implement.
-- **Shutdown** — the optional `Stop(ctx, cause) error` for graceful cleanup. `cause` is the error that
-  triggered shutdown (`nil` for a clean stop). A component without it stops purely on ctx cancellation.
+- **Shutdown** — the optional `Stop(ctx) error` for graceful cleanup, called with a context bounded by the
+  shutdown timeout. A component without it stops purely on ctx cancellation.
 - **Prober** — the optional `Probe(ctx) error` for readiness. `healthserver` polls all registered probers on
   `/readyz`.
 - **entrypoint** — the lifecycle manager that owns a set of services and drives them through startup, waiting
@@ -66,8 +66,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/DjaPy/gokit-services/core/entrypoint"
-	httpsrv "github.com/DjaPy/gokit-services/http/server"
+	"github.com/DjaPy/gokit-services/pkg/core/entrypoint"
+	httpsrv "github.com/DjaPy/gokit-services/pkg/http/server"
 )
 
 func main() {
@@ -93,7 +93,7 @@ func main() {
 or an explicit `ep.Shutdown()`. The lifecycle runs strictly in order: PreStart hooks → Start (concurrently) →
 PostStart hooks → wait → PreStop hooks → Stop (concurrently) → PostStop hooks.
 
-Transports are grouped by protocol and the contract/orchestration layer lives in `core/`. Import the
+Transports are grouped by protocol and the contract/orchestration layer lives in `pkg/core/`. Import the
 `server`/`client` subpackages with aliases (`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`) to sidestep the generic
 names and the clash with stdlib `net/http`.
 
@@ -101,7 +101,7 @@ names and the clash with stdlib `net/http`.
 <summary><b>HTTP client — base URL, middleware chain, generic decode</b></summary>
 
 ```go
-import httpcli "github.com/DjaPy/gokit-services/http/client"
+import httpcli "github.com/DjaPy/gokit-services/pkg/http/client"
 
 c, err := httpcli.New("https://api.example.com",
 	httpcli.WithTimeout(10*time.Second),
@@ -136,20 +136,20 @@ The server implements `service.Service` and `service.Shutdown`, collects Prometh
 
 | Import path | What it is |
 |-------------|------------|
-| `core/entrypoint` | Application lifecycle: signal handling, lifecycle hooks, concurrent start/stop, graceful shutdown |
-| `core/service` | Base interfaces: `Service`, `Shutdown`, `Prober` |
-| `http/server` | HTTP server with Prometheus metrics and panic recovery (RFC 7807) |
-| `http/client` | HTTP client with a base URL, middleware chain and generic `Do[T]` |
-| `grpc/server` | Managed gRPC server |
-| `grpc/client` | Managed gRPC client |
-| `kafka` | Kafka dialer/probe with TLS + SASL (PLAIN, SCRAM-SHA-256/512) |
-| `kafka/producer` | Managed producer (`Produce`/`ProduceBatch`, compression, retries) |
-| `kafka/consumer` | Managed consumer group with bounded worker-pool dispatch, at-least-once commit |
-| `dbservice` | Managed PostgreSQL pool (`pgxpool`) with retry-backed startup and pool metrics |
-| `redisservice` | Managed Redis client (`go-redis/v9`) with retry-backed startup and pool metrics |
-| `healthserver` | `/healthz` and `/readyz` endpoints polling `service.Prober`s concurrently |
-| `periodic` | Periodic background service (overlapping / non-overlapping modes) |
-| `workerpool` | Bounded goroutine pool with backpressure via `Submit(ctx, task)` |
+| `pkg/core/entrypoint` | Application lifecycle: signal handling, lifecycle hooks, concurrent start/stop, graceful shutdown |
+| `pkg/core/service` | Base interfaces: `Service`, `Shutdown`, `Prober` |
+| `pkg/http/server` | HTTP server with Prometheus metrics and panic recovery (RFC 7807) |
+| `pkg/http/client` | HTTP client with a base URL, middleware chain and generic `Do[T]` |
+| `pkg/grpc/server` | Managed gRPC server |
+| `pkg/grpc/client` | Managed gRPC client |
+| `pkg/kafka` | Kafka dialer/probe with TLS + SASL (PLAIN, SCRAM-SHA-256/512) |
+| `pkg/kafka/producer` | Managed producer (`Produce`/`ProduceBatch`, compression, retries) |
+| `pkg/kafka/consumer` | Managed consumer group with bounded worker-pool dispatch, at-least-once commit |
+| `pkg/dbservice` | Managed PostgreSQL pool (`pgxpool`) with retry-backed startup and pool metrics |
+| `pkg/redisservice` | Managed Redis client (`go-redis/v9`) with retry-backed startup and pool metrics |
+| `pkg/healthserver` | `/healthz` and `/readyz` endpoints polling `service.Prober`s concurrently |
+| `pkg/periodic` | Periodic background service (overlapping / non-overlapping modes) |
+| `pkg/workerpool` | Bounded goroutine pool with backpressure via `Submit(ctx, task)` |
 
 ## Details
 

@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DjaPy/gokit-services/periodic"
+	"github.com/DjaPy/gokit-services/pkg/periodic"
 )
 
 var errCleanupNotWarmedUp = errors.New("cleanup job has not completed its first sweep yet")

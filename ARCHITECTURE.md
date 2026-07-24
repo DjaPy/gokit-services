@@ -7,7 +7,10 @@ service. For usage, see the [README](README.md).
 
 ## Package organization
 
-The layout separates the *contract* from the *transports* from the *managed resources*:
+All library code lives under `pkg/`; the repo root holds only `example/`, `docs/` and
+project files. Import paths are therefore `github.com/DjaPy/gokit-services/pkg/…` (package
+names below are given relative to `pkg/`). The layout separates the *contract* from the
+*transports* from the *managed resources*:
 
 - `core/` — the orchestration layer. `core/service` holds the interfaces everything else
   implements; `core/entrypoint` is the only package that knows how to run a set of
@@ -15,9 +18,10 @@ The layout separates the *contract* from the *transports* from the *managed reso
 - `http/`, `grpc/`, `kafka/` — transports grouped by protocol, each split into `server`
   and `client` (or `producer`/`consumer`) subpackages. They depend on `core/service` but
   not on each other.
-- Top-level infrastructure packages — `dbservice`, `redisservice`, `healthserver`,
-  `periodic`, `workerpool` — are leaf components that also implement the `core/service`
-  contract and are consumed the same way.
+- Infrastructure packages — `dbservice`, `redisservice`, `healthserver`, `periodic`,
+  `workerpool` — are leaf components under `pkg/` that also implement the `core/service`
+  contract and are consumed the same way. `internal/` (retry, prom helpers) is shared
+  within `pkg/` and not importable by consumers.
 
 The dependency direction is strictly one-way: leaves → `core/service` ← `core/entrypoint`.
 `entrypoint` depends only on the interfaces, never on a concrete transport, so the set of
@@ -34,9 +38,8 @@ Three small interfaces, composed by capability rather than inheritance:
 - `Service` — `Start(ctx) error`. The one required method. `Start` **blocks** until the
   service is fully stopped; the `ctx` is canceled when the entrypoint begins shutdown. A
   service that only implements `Service` treats ctx-cancellation as its sole stop signal.
-- `Shutdown` — `Stop(ctx, cause) error`. Optional graceful stop. `cause` is the error that
-  triggered shutdown (`nil` for a clean stop). Implemented via a type assertion, so it is
-  purely additive.
+- `Shutdown` — `Stop(ctx) error`. Optional graceful stop, called with a context bounded by
+  the shutdown timeout. Implemented via a type assertion, so it is purely additive.
 - `Prober` — `Probe(ctx) error`. Optional readiness participation; `nil` means ready.
 
 Every component is a plain struct constructed with functional options (`Option func(*T)`)
@@ -63,7 +66,8 @@ backs the programmatic `Shutdown()` trigger.
    the first service error, or the programmatic shutdown ctx. The winner becomes
    `shutdownCause`.
 5. **PreStop hooks**, then **Stop** — every service that also implements `Shutdown` has
-   `Stop(stopCtx, cause)` called concurrently; stop errors are logged, not propagated.
+   `Stop(stopCtx)` called concurrently; stop errors are logged, not propagated. The reason
+   shutdown began (`shutdownCause`) is not passed to `Stop` — it is `Run`'s return value.
 6. **PostStop hooks** — always run.
 
 `Run` returns `shutdownCause`, so the process exit reflects *why* it stopped.
