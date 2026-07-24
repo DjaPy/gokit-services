@@ -1,45 +1,45 @@
 # gokit-services
 
-Переиспользуемый Go-тулкит для микросервисов. Go 1.26. Module: `github.com/DjaPy/gokit-services`.
+Reusable Go toolkit for microservices. Go 1.26. Module: `github.com/DjaPy/gokit-services`.
 
-## Структура
+## Structure
 
 ```
 core/
-  entrypoint/   — жизненный цикл приложения
-  service/      — интерфейсы Service, Shutdown, Prober
+  entrypoint/   — application lifecycle
+  service/      — Service, Shutdown, Prober interfaces
 http/
-  server/       — HTTP сервер с Prometheus и panic recovery (package server)
-  client/       — HTTP клиент с middleware chain (package client)
+  server/       — HTTP server with Prometheus and panic recovery (package server)
+  client/       — HTTP client with a middleware chain (package client)
 grpc/
-  server/       — gRPC сервер (package server)
-  client/       — gRPC клиент (package client)
-kafka/          — dialer/TLS/SASL + подпакеты producer/ и consumer/
+  server/       — gRPC server (package server)
+  client/       — gRPC client (package client)
+kafka/          — dialer/TLS/SASL + producer/ and consumer/ subpackages
 ```
 
-Транспорты сгруппированы по протоколу, а контрактно-оркестрационный слой
-вынесен в `core/`. Подпакеты `server`/`client` рекомендуется импортировать с алиасами
-(`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`) — это снимает коллизии генеричных имён и
-конфликт с stdlib `net/http`. Инфраструктурные сервисы (`healthserver`, `periodic`,
-`workerpool`, `dbservice`, `redisservice`) остаются пакетами верхнего уровня.
+Transports are grouped by protocol, and the contract/orchestration layer is moved
+into `core/`. The `server`/`client` subpackages are best imported with aliases
+(`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`) — this avoids collisions of the generic
+names and the clash with stdlib `net/http`. The infrastructure services (`healthserver`,
+`periodic`, `workerpool`, `dbservice`, `redisservice`) remain top-level packages.
 
-## Интерфейсы (core/service)
+## Interfaces (core/service)
 
 ```go
 type Service interface {
-    Start(ctx context.Context) error  // блокирует до остановки; ctx отменяется при shutdown
+    Start(ctx context.Context) error  // blocks until stopped; ctx is canceled on shutdown
 }
 
 type Shutdown interface {
-    Stop(ctx context.Context, cause error) error  // опциональный graceful stop
+    Stop(ctx context.Context, cause error) error  // optional graceful stop
 }
 ```
 
 ## entrypoint
 
-Управляет жизненным циклом нескольких сервисов. Shutdown триггерится: SIGINT/SIGTERM, отмена ctx, ошибка сервиса, `ep.Shutdown()`.
+Manages the lifecycle of multiple services. Shutdown is triggered by: SIGINT/SIGTERM, ctx cancellation, a service error, or `ep.Shutdown()`.
 
-Порядок: PreStart hooks → Start (параллельно) → PostStart hooks → ожидание → PreStop hooks → Stop (параллельно) → PostStop hooks.
+Order: PreStart hooks → Start (concurrently) → PostStart hooks → wait → PreStop hooks → Stop (concurrently) → PostStop hooks.
 
 ```go
 import "github.com/DjaPy/gokit-services/core/entrypoint"
@@ -54,11 +54,11 @@ ep.Run(ctx)
 
 ## http/server
 
-HTTP сервер реализует `service.Service` и `service.Shutdown`. Автоматически собирает Prometheus метрики и восстанавливается после паники.
+The HTTP server implements `service.Service` and `service.Shutdown`. It automatically collects Prometheus metrics and recovers from panics.
 
-**Метрики:** `http_request_duration_seconds`, `http_response_size_bytes`, `http_requests_inflight`, `http_panic_recovery_total`. Labels: `http_service`, `http_handler`, `http_method`, `http_code`.
+**Metrics:** `http_request_duration_seconds`, `http_response_size_bytes`, `http_requests_inflight`, `http_panic_recovery_total`. Labels: `http_service`, `http_handler`, `http_method`, `http_code`.
 
-**Важно:** Всегда передавать `WithPrometheusRegisterer(prometheus.NewRegistry())` в тестах — иначе второй `NewServer` с дефолтным регистратором паникует на дублирующейся регистрации метрик. В продакшне использовать один `NewServer` на процесс или свой `Registerer`.
+**Important:** Always pass `WithPrometheusRegisterer(prometheus.NewRegistry())` in tests — otherwise a second `NewServer` with the default registerer panics on duplicate metric registration. In production, use a single `NewServer` per process or your own `Registerer`.
 
 ```go
 import httpsrv "github.com/DjaPy/gokit-services/http/server"
@@ -72,13 +72,13 @@ srv := httpsrv.NewServer(mux,
 )
 ```
 
-Паника в хендлере возвращает клиенту RFC 7807 Problem JSON (`application/problem+json`) со статусом 500 — только если ответ ещё не начал отправляться.
+A panic in a handler returns an RFC 7807 Problem JSON (`application/problem+json`) with status 500 to the client — only if the response hasn't started being sent yet.
 
-`responseWriter` пробрасывает `http.Flusher` и `http.Hijacker` — SSE и WebSocket работают корректно.
+`responseWriter` forwards `http.Flusher` and `http.Hijacker` — SSE and WebSocket work correctly.
 
 ## http/client
 
-HTTP клиент с фиксированным base URL и middleware chain. Дженерик `Do[T]` декодирует JSON-ответ в T.
+HTTP client with a fixed base URL and a middleware chain. The generic `Do[T]` decodes a JSON response into T.
 
 ```go
 import httpcli "github.com/DjaPy/gokit-services/http/client"
@@ -92,57 +92,57 @@ type User struct { Name string `json:"name"` }
 user, err := httpcli.Do[User](ctx, c, http.MethodGet, "/users/42")
 ```
 
-**`Do[T]`** возвращает ошибку при non-2xx. Для пустого тела (204 No Content) возвращает zero value без ошибки.
+**`Do[T]`** returns an error on non-2xx. For an empty body (204 No Content) it returns the zero value without an error.
 
-**Middleware:** первый в списке — внешний (выполняется первым). Применяется после всех Option'ов, поэтому `WithMiddleware` и `WithTransport` можно передавать в любом порядке.
+**Middleware:** the first in the list is the outermost (runs first). It is applied after all Options, so `WithMiddleware` and `WithTransport` can be passed in any order.
 
-**`WithBody`** выставляет `Content-Length` автоматически для типов, реализующих `Len() int` (`*bytes.Buffer`, `*strings.Reader`).
+**`WithBody`** sets `Content-Length` automatically for types implementing `Len() int` (`*bytes.Buffer`, `*strings.Reader`).
 
-## Паттерны
+## Patterns
 
-- **Functional options** везде: `Option func(*T)` для конструктора, `RequestOption func(*http.Request)` для запросов.
-- **slog** для логирования — `slog.Default()` по умолчанию, переопределяется через `WithLogger`.
-- **Prometheus** — изолированные регистраторы для тестов, дефолтный для продакшна.
-- Тесты используют `httptest.NewServer` / `httptest.NewRecorder`, реальные HTTP соединения (никаких моков транспорта).
+- **Functional options** everywhere: `Option func(*T)` for the constructor, `RequestOption func(*http.Request)` for requests.
+- **slog** for logging — `slog.Default()` by default, overridable via `WithLogger`.
+- **Prometheus** — isolated registerers for tests, the default one for production.
+- Tests use `httptest.NewServer` / `httptest.NewRecorder`, real HTTP connections (no transport mocks).
 
-## Команды
+## Commands
 
 ```bash
-go test ./...          # все тесты
-go test -race ./...    # с детектором гонок
+go test ./...          # all tests
+go test -race ./...    # with the race detector
 ```
 
-## Версионирование и релизы
+## Versioning and releases
 
-Модуль — чистая библиотека (нет `cmd/`), поэтому версия задаётся исключительно git-тегами;
-никакого build-time инжектирования версии (`-ldflags`) не требуется. Потребители фиксируют
-версию через `go get github.com/DjaPy/gokit-services@vX.Y.Z`.
+The module is a pure library (no `cmd/`), so the version is set exclusively by git tags;
+no build-time version injection (`-ldflags`) is needed. Consumers pin the version via
+`go get github.com/DjaPy/gokit-services@vX.Y.Z`.
 
-**Политика (SemVer, `vMAJOR.MINOR.PATCH`):**
-- Пока проект в `v0.x.y` (первого релиза ещё не было): `MINOR` — новые фичи и breaking changes,
-  `PATCH` — только багфиксы без изменения API. Обратная совместимость между `0.x` релизами
-  не гарантируется — это ожидаемо для pre-1.0 по духу SemVer.
-- После первого `v1.0.0`: `PATCH` — багфиксы, `MINOR` — обратно совместимые фичи,
+**Policy (SemVer, `vMAJOR.MINOR.PATCH`):**
+- While the project is in `v0.x.y` (no first release yet): `MINOR` — new features and breaking
+  changes, `PATCH` — bugfixes only, no API changes. Backward compatibility between `0.x` releases
+  is not guaranteed — that is expected for pre-1.0 per the spirit of SemVer.
+- After the first `v1.0.0`: `PATCH` — bugfixes, `MINOR` — backward-compatible features,
   `MAJOR` — breaking changes.
-- **Переход на `v2.0.0`+**: путь модуля должен получить суффикс `/v2` (`module
-  github.com/DjaPy/gokit-services/v2` в `go.mod`), это требование Go modules, не опция.
+- **Moving to `v2.0.0`+**: the module path must gain a `/v2` suffix (`module
+  github.com/DjaPy/gokit-services/v2` in `go.mod`) — this is a Go modules requirement, not an option.
 
-**Процесс релиза** (через `justfile`, git-теги — единственный источник версии, `.version`-файла нет):
-1. Обновить `CHANGELOG.md`: перенести содержимое `[Unreleased]` под новый заголовок
-   `[X.Y.Z] - YYYY-MM-DD`, оставить `[Unreleased]` пустым для следующих изменений; закоммитить
-   (`git commit -m "chore: release vX.Y.Z"`) и запушить в `main` — этот шаг justfile не автоматизирует
-2. Запустить один из рецептов (гоняет `all-check`: build+lint+test-coverage, затем тегает и пушит):
+**Release process** (via `justfile`, git tags are the single source of the version, there is no `.version` file):
+1. Update `CHANGELOG.md`: move the contents of `[Unreleased]` under a new heading
+   `[X.Y.Z] - YYYY-MM-DD`, leaving `[Unreleased]` empty for the next changes; commit
+   (`git commit -m "chore: release vX.Y.Z"`) and push to `main` — justfile does not automate this step.
+2. Run one of the recipes (runs `all-check`: build+lint+test-coverage, then tags and pushes):
    ```bash
-   just release-patch   # X.Y.Z -> X.Y.(Z+1) — багфиксы
-   just release-minor   # X.Y.Z -> X.(Y+1).0 — новые фичи / breaking changes до v1.0.0
-   just release-major   # X.Y.Z -> (X+1).0.0 — breaking changes после v1.0.0
+   just release-patch   # X.Y.Z -> X.Y.(Z+1) — bugfixes
+   just release-minor   # X.Y.Z -> X.(Y+1).0 — new features / breaking changes before v1.0.0
+   just release-major   # X.Y.Z -> (X+1).0.0 — breaking changes after v1.0.0
    ```
-   Текущая версия читается из `git describe --tags --abbrev=0` — новый тег всегда считается
-   от последнего существующего, вручную ничего не вводится. Для тега без пуша — `just bump-patch`
-   и т.п. (тег создаётся локально, пушить `git push --tags` отдельно).
-3. `.github/workflows/release.yml` реагирует на push тега `v*`: прогоняет CI (переиспользует
-   `ci.yml` как reusable workflow — тот объявляет `workflow_call`) и создаёт GitHub Release
-   с auto-generated notes — вручную ничего создавать не нужно
+   The current version is read from `git describe --tags --abbrev=0` — a new tag is always counted
+   from the latest existing one, nothing is entered manually. For a tag without a push, use
+   `just bump-patch` etc. (the tag is created locally; push it separately with `git push --tags`).
+3. `.github/workflows/release.yml` reacts to a `v*` tag push: it runs CI (reusing `ci.yml` as a
+   reusable workflow — that one declares `workflow_call`) and creates a GitHub Release with
+   auto-generated notes — nothing needs to be created manually.
 
-**Breaking changes до `v1.0.0`**: допустимы в `MINOR`-релизах, но должны быть явно отмечены
-в `CHANGELOG.md` под заголовком `### Changed` с пометкой **BREAKING**.
+**Breaking changes before `v1.0.0`**: allowed in `MINOR` releases, but must be explicitly marked
+in `CHANGELOG.md` under a `### Changed` heading with a **BREAKING** note.

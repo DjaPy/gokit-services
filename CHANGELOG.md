@@ -1,32 +1,33 @@
 # Changelog
 
-Все заметные изменения этого проекта документируются в этом файле.
+All notable changes to this project are documented in this file.
 
-Формат основан на [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-проект придерживается [Semantic Versioning](https://semver.org/) (до v1.0.0 —
-см. политику версионирования в `CLAUDE.md`).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/) (pre-1.0.0 —
+see the versioning policy in `CLAUDE.md`).
 
 ## [Unreleased]
 
 ## [0.4.1] - 2026-07-21
 
 ### Fixed
-- `grpc/server` — `Stop` теперь детерминированно обрабатывает уже истёкший
-  контекст: при `ctx.Err() != nil` сразу выполняет форсированную остановку и
-  возвращает ошибку контекста, не запуская graceful-путь. Раньше graceful-стоп
-  сервера без активных соединений завершался мгновенно и мог выиграть гонку в
-  `select` с `ctx.Done()`, из-за чего `Stop` изредка возвращал `nil` вместо
-  ошибки контекста.
+- `grpc/server` — `Stop` now handles an already-expired context deterministically:
+  when `ctx.Err() != nil` it performs a forced stop immediately and returns the
+  context error instead of taking the graceful path. Previously a graceful stop of
+  a server with no active connections completed instantly and could win the race in
+  the `select` against `ctx.Done()`, so `Stop` occasionally returned `nil` instead
+  of the context error.
 
 ## [0.4.0] - 2026-07-20
 
 ### Changed
-- **BREAKING**: реорганизована раскладка пакетов — транспорты сгруппированы по протоколу
-  (по образцу `kafka/`), а контрактно-оркестрационный слой вынесен в `core/`. Поведение,
-  публичные API, сигнатуры и метрики не изменились — обновить нужно только пути импорта:
+- **BREAKING**: package layout reorganized — transports are grouped by protocol
+  (following the `kafka/` model), and the contract/orchestration layer is moved into
+  `core/`. Behavior, public APIs, signatures, and metrics are unchanged — only the
+  import paths need updating:
 
-  | Старый путь | Новый путь |
-  |-------------|------------|
+  | Old path | New path |
+  |----------|----------|
   | `github.com/DjaPy/gokit-services/service` | `github.com/DjaPy/gokit-services/core/service` |
   | `github.com/DjaPy/gokit-services/entrypoint` | `github.com/DjaPy/gokit-services/core/entrypoint` |
   | `github.com/DjaPy/gokit-services/httpserver` | `github.com/DjaPy/gokit-services/http/server` |
@@ -34,11 +35,12 @@
   | `github.com/DjaPy/gokit-services/grpcserver` | `github.com/DjaPy/gokit-services/grpc/server` |
   | `github.com/DjaPy/gokit-services/grpcclient` | `github.com/DjaPy/gokit-services/grpc/client` |
 
-  Имена пакетов `service` и `entrypoint` сохранены (меняется только путь). Транспортные
-  подпакеты теперь называются `server`/`client` — импортировать их рекомендуется с алиасами
-  (`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`), чтобы избежать коллизий и конфликта имени с
-  stdlib `net/http`. `kafka/` и инфраструктурные сервисы (`healthserver`, `periodic`,
-  `workerpool`, `dbservice`, `redisservice`) не затронуты.
+  The `service` and `entrypoint` package names are preserved (only the path changes).
+  The transport subpackages are now named `server`/`client` — importing them with
+  aliases (`httpsrv`, `httpcli`, `grpcsrv`, `grpccli`) is recommended to avoid name
+  collisions and the clash with stdlib `net/http`. `kafka/` and the infrastructure
+  services (`healthserver`, `periodic`, `workerpool`, `dbservice`, `redisservice`)
+  are unaffected.
 
 ## [0.3.0] - 2026-07-18
 
@@ -83,17 +85,19 @@
 ## [0.1.0] - 2026-07-10
 
 ### Added
-- `entrypoint` — управление жизненным циклом сервисов: SIGINT/SIGTERM, lifecycle-хуки, graceful shutdown
-- `httpserver` — HTTP-сервер с Prometheus-метриками и panic recovery
-- `httpclient` — HTTP-клиент с middleware chain и generic `Do[T]`
-- `grpcserver` — управляемый gRPC-сервер (`service.Service` + `service.Shutdown`)
-- `grpcclient` — управляемый gRPC-клиент (`service.Service` + `service.Shutdown`)
-- `healthserver` — `/healthz` и `/readyz` эндпоинты с параллельным опросом `service.Prober`
-- `periodic` — периодический фоновый сервис (overlapping/non-overlapping режимы)
-- `workerpool` — ограниченный пул горутин с backpressure через `Submit(ctx, task)`
-- `service` — базовые интерфейсы `Service`, `Shutdown`, `Prober`
+- `entrypoint` — service lifecycle management: SIGINT/SIGTERM, lifecycle hooks, graceful shutdown
+- `httpserver` — HTTP server with Prometheus metrics and panic recovery
+- `httpclient` — HTTP client with a middleware chain and generic `Do[T]`
+- `grpcserver` — managed gRPC server (`service.Service` + `service.Shutdown`)
+- `grpcclient` — managed gRPC client (`service.Service` + `service.Shutdown`)
+- `healthserver` — `/healthz` and `/readyz` endpoints with concurrent `service.Prober` polling
+- `periodic` — periodic background service (overlapping/non-overlapping modes)
+- `workerpool` — bounded goroutine pool with backpressure via `Submit(ctx, task)`
+- `service` — base interfaces `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/DjaPy/gokit-services/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/DjaPy/gokit-services/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/DjaPy/gokit-services/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DjaPy/gokit-services/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/DjaPy/gokit-services/compare/v0.1.0...v0.1.1
