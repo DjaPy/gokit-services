@@ -8,6 +8,8 @@ see the versioning policy in `CLAUDE.md`).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-25
+
 ### Changed
 - **BREAKING**: all library packages moved under `pkg/`. `example/` and `docs/` stay at the
   repo root. The module path and versioning are unchanged, but every import path gains a
@@ -132,7 +134,8 @@ see the versioning policy in `CLAUDE.md`).
 - `workerpool` — bounded goroutine pool with backpressure via `Submit(ctx, task)`
 - `service` — base interfaces `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/DjaPy/gokit-services/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/DjaPy/gokit-services/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DjaPy/gokit-services/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/DjaPy/gokit-services/compare/v0.2.0...v0.3.0
