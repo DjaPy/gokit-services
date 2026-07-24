@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	orders "github.com/DjaPy/gokit-services/example/orders-service"
+	"github.com/DjaPy/gokit-services/example/orders-service"
 	"github.com/DjaPy/gokit-services/kafka/producer"
 )
 
@@ -28,8 +28,8 @@ func (k *KafkaPublisher) Publish(ctx context.Context, ev orders.OrderEvent) erro
 	if err != nil {
 		return fmt.Errorf("kafka publish %s: marshal: %w", ev.Type, err)
 	}
-	if err := k.producer.Produce(ctx, k.topic, []byte(ev.OrderID), payload, nil); err != nil {
-		return fmt.Errorf("kafka publish %s: %w", ev.Type, err)
+	if errPr := k.producer.Produce(ctx, k.topic, []byte(ev.OrderID), payload, nil); errPr != nil {
+		return fmt.Errorf("kafka publish %s: %w", ev.Type, errPr)
 	}
 	return nil
 }
