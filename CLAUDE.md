@@ -105,6 +105,21 @@ user, err := httpcli.Do[User](ctx, c, http.MethodGet, "/users/42")
 
 **`WithBody`** sets `Content-Length` automatically for types implementing `Len() int` (`*bytes.Buffer`, `*strings.Reader`).
 
+## grpc/server, grpc/client
+
+Both collect Prometheus metrics out of the box through built-in unary and stream interceptors,
+prepended (outermost) so any interceptors added via `WithServerOptions` / `WithDialOptions` are
+still timed and counted. Configure with `WithAppName` and `WithPrometheusRegisterer` (as with
+`http/server`, pass `prometheus.NewRegistry()` in tests — `internal/prom.RegisterOrReuse` also
+makes repeated construction on the default registerer safe).
+
+**Metrics:** `grpc_server_handled_total`, `grpc_server_handling_seconds`,
+`grpc_server_requests_inflight` (server) and the matching `grpc_client_*` (client). Labels:
+`grpc_service` (app name), `grpc_type` (`unary` / `client_stream` / `server_stream` /
+`bidi_stream`), `grpc_method` (full RPC method), `grpc_code` (status code; inflight gauge omits
+it). Server-stream duration is the handler's lifetime; client streams are observed on
+termination (the wrapping `ClientStream` records when the final `RecvMsg` returns).
+
 ## Patterns
 
 - **Functional options** everywhere: `Option func(*T)` for the constructor, `RequestOption func(*http.Request)` for requests.

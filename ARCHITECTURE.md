@@ -119,6 +119,21 @@ by a `sync.Once`) against `ctx.Done()`; if the deadline wins first it falls back
 completes instantly and could otherwise win the `select` against an already-done context,
 making `Stop` return `nil` when it should have reported the context error.
 
+**Metrics.** Both ends are instrumented out of the box by built-in unary and stream
+interceptors — the server families are `grpc_server_*`, the client families `grpc_client_*`
+(`_handled_total`, `_handling_seconds`, `_requests_inflight`), labeled by
+`grpc_service`/`grpc_type`/`grpc_method`/`grpc_code` (the inflight gauge drops `grpc_code`).
+`grpc_service` is the app name, `grpc_type` is `unary`/`client_stream`/`server_stream`/
+`bidi_stream`, `grpc_method` is the full RPC method. The interceptors are chained as the
+**outermost** layer, so interceptors passed via `WithServerOptions`/`WithDialOptions` are
+still timed and counted rather than clobbered. As with HTTP, the metrics live behind a
+`prometheus.Registerer` chosen at construction (`WithPrometheusRegisterer`), and registration
+goes through `internal/prom.RegisterOrReuse` so repeated construction reuses the existing
+collectors instead of panicking. Duration semantics differ by side: a server stream is timed
+by the lifetime of its handler, while a client stream is observed through a
+`monitoredClientStream` wrapper that records once the terminal `RecvMsg` returns — a client
+stream the caller abandons without draining never records completion (see fragile points).
+
 ## Kafka (`kafka`, `kafka/producer`, `kafka/consumer`)
 
 `kafka` is the shared transport layer: a dialer/probe with TLS and SASL (PLAIN,
@@ -200,6 +215,14 @@ Non-obvious spots where a plausible-looking change reintroduces a real bug:
 - **gRPC `Stop` on an expired context.** The early `ctx.Err() != nil` branch must stay — a
   graceful stop with no connections finishes instantly and would otherwise race
   `ctx.Done()`, returning `nil` instead of the context error. (Regression fixed in v0.4.1.)
+- **gRPC metrics interceptor ordering.** The built-in metrics interceptor is chained as the
+  outermost layer; keep it prepended when assembling the gRPC options. Registering it inner
+  (or via a plain `UnaryInterceptor` that overrides the chain) drops the timing of
+  user-supplied interceptors and can clobber them.
+- **gRPC client-stream inflight.** `grpc_client_requests_inflight` is decremented only when
+  `monitoredClientStream.RecvMsg` observes the stream's terminal error. A client stream the
+  caller abandons without draining to `io.EOF`/error leaves the gauge raised and records no
+  completion — an accepted limitation, not a leak to "fix" by decrementing early.
 - **Entrypoint stop context.** It must be `WithoutCancel(ctx)` + timeout, never the live
   `ctx` (killed the instant shutdown starts) and never a bare `Background()` (drops the
   caller's values). PostStop hooks run on `Background()` by design.

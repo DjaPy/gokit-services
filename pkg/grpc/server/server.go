@@ -7,8 +7,13 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	grpclib "google.golang.org/grpc"
+	"google.golang.org/grpc/status"
+
+	"github.com/DjaPy/gokit-services/pkg/internal/prom"
 )
 
 // Server wraps a *grpc.Server and implements service.Service and service.Shutdown.
@@ -16,12 +21,18 @@ import (
 type Server struct {
 	host         string
 	port         int
+	appName      string
 	srvOpts      []grpclib.ServerOption
 	srv          *grpclib.Server
 	logger       *slog.Logger
+	registerer   prometheus.Registerer
 	mu           sync.RWMutex
 	listener     net.Listener
 	shutdownOnce sync.Once
+
+	handledTotal     *prometheus.CounterVec
+	handlingDuration *prometheus.HistogramVec
+	requestsInflight *prometheus.GaugeVec
 }
 
 // Option configures a Server.
@@ -42,6 +53,16 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Server) { s.logger = l }
 }
 
+// WithAppName sets the application name used in Prometheus metric labels.
+func WithAppName(name string) Option {
+	return func(s *Server) { s.appName = name }
+}
+
+// WithPrometheusRegisterer sets a custom Prometheus registerer.
+func WithPrometheusRegisterer(r prometheus.Registerer) Option {
+	return func(s *Server) { s.registerer = r }
+}
+
 // WithServerOptions adds gRPC server options (e.g. interceptors, credentials, keepalive params).
 func WithServerOptions(opts ...grpclib.ServerOption) Option {
 	return func(s *Server) { s.srvOpts = append(s.srvOpts, opts...) }
@@ -51,15 +72,92 @@ func WithServerOptions(opts ...grpclib.ServerOption) Option {
 // Register gRPC service implementations via GRPCServer() before calling Start.
 func NewServer(opts ...Option) *Server {
 	s := &Server{
-		host:   "0.0.0.0",
-		port:   9090,
-		logger: slog.Default(),
+		host:       "0.0.0.0",
+		port:       9090,
+		logger:     slog.Default(),
+		registerer: prometheus.DefaultRegisterer,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	s.srv = grpclib.NewServer(s.srvOpts...)
+	s.initMetrics()
+	srvOpts := append([]grpclib.ServerOption{
+		grpclib.ChainUnaryInterceptor(s.unaryServerInterceptor()),
+		grpclib.ChainStreamInterceptor(s.streamServerInterceptor()),
+	}, s.srvOpts...)
+	s.srv = grpclib.NewServer(srvOpts...)
 	return s
+}
+
+func (s *Server) initMetrics() {
+	s.handledTotal = prom.RegisterOrReuse(s.registerer, prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "grpc_server_handled_total",
+			Help: "Total number of RPCs completed on the server, by method, type and status code.",
+		},
+		[]string{"grpc_service", "grpc_type", "grpc_method", "grpc_code"},
+	))
+	s.handlingDuration = prom.RegisterOrReuse(s.registerer, prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "grpc_server_handling_seconds",
+			Help:    "The latency of RPCs handled by the server.",
+			Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+		},
+		[]string{"grpc_service", "grpc_type", "grpc_method", "grpc_code"},
+	))
+	s.requestsInflight = prom.RegisterOrReuse(s.registerer, prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "grpc_server_requests_inflight",
+			Help: "The number of RPCs currently being handled by the server.",
+		},
+		[]string{"grpc_service", "grpc_type", "grpc_method"},
+	))
+}
+
+func (s *Server) unaryServerInterceptor() grpclib.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpclib.UnaryServerInfo, handler grpclib.UnaryHandler) (any, error) {
+		const grpcType = "unary"
+		s.requestsInflight.WithLabelValues(s.appName, grpcType, info.FullMethod).Inc()
+		start := time.Now()
+
+		resp, err := handler(ctx, req)
+
+		code := status.Code(err).String()
+		s.requestsInflight.WithLabelValues(s.appName, grpcType, info.FullMethod).Dec()
+		s.handledTotal.WithLabelValues(s.appName, grpcType, info.FullMethod, code).Inc()
+		s.handlingDuration.WithLabelValues(s.appName, grpcType, info.FullMethod, code).Observe(time.Since(start).Seconds())
+		return resp, err
+	}
+}
+
+func (s *Server) streamServerInterceptor() grpclib.StreamServerInterceptor {
+	return func(srv any, ss grpclib.ServerStream, info *grpclib.StreamServerInfo, handler grpclib.StreamHandler) error {
+		grpcType := streamType(info.IsClientStream, info.IsServerStream)
+		s.requestsInflight.WithLabelValues(s.appName, grpcType, info.FullMethod).Inc()
+		start := time.Now()
+
+		err := handler(srv, ss)
+
+		code := status.Code(err).String()
+		s.requestsInflight.WithLabelValues(s.appName, grpcType, info.FullMethod).Dec()
+		s.handledTotal.WithLabelValues(s.appName, grpcType, info.FullMethod, code).Inc()
+		s.handlingDuration.WithLabelValues(s.appName, grpcType, info.FullMethod, code).Observe(time.Since(start).Seconds())
+		return err
+	}
+}
+
+// streamType maps the gRPC stream flags to a grpc_type label value.
+func streamType(clientStream, serverStream bool) string {
+	switch {
+	case clientStream && serverStream:
+		return "bidi_stream"
+	case clientStream:
+		return "client_stream"
+	case serverStream:
+		return "server_stream"
+	default:
+		return "unary"
+	}
 }
 
 // GRPCServer returns the underlying *grpc.Server for registering gRPC service implementations.

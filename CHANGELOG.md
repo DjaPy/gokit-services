@@ -8,6 +8,16 @@ see the versioning policy in `CLAUDE.md`).
 
 ## [Unreleased]
 
+### Added
+- `grpc/server` and `grpc/client` now collect Prometheus metrics out of the box via built-in
+  unary and stream interceptors, mirroring `http/server`. New options `WithAppName` and
+  `WithPrometheusRegisterer` on both. Metrics: `grpc_server_handled_total`,
+  `grpc_server_handling_seconds`, `grpc_server_requests_inflight` (server) and the matching
+  `grpc_client_*` (client), labeled `grpc_service` (app name), `grpc_type` (unary /
+  client_stream / server_stream / bidi_stream), `grpc_method` (full RPC method) and `grpc_code`.
+  The interceptors run outermost, so any interceptors passed via `WithServerOptions` /
+  `WithDialOptions` are still timed and counted.
+
 ## [0.5.0] - 2026-07-25
 
 ### Changed
