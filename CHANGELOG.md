@@ -8,6 +8,8 @@ see the versioning policy in `CLAUDE.md`).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-06
+
 ### Added
 - `grpc/server` and `grpc/client` now collect Prometheus metrics out of the box via built-in
   unary and stream interceptors, mirroring `http/server`. New options `WithAppName` and
