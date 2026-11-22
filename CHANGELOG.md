@@ -8,6 +8,12 @@ see the versioning policy in `agent.md`).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-22
+
+### Fixed
+- `entrypoint` runs the shutdown sequence after a `PostStart` hook fails and
+  returns the hook error after cleanup.
+
 ## [0.6.0] - 2026-08-06
 
 ### Added
@@ -146,7 +152,9 @@ see the versioning policy in `agent.md`).
 - `workerpool` — bounded goroutine pool with backpressure via `Submit(ctx, task)`
 - `service` — base interfaces `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/DjaPy/gokit-services/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/DjaPy/gokit-services/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/DjaPy/gokit-services/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/DjaPy/gokit-services/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DjaPy/gokit-services/compare/v0.3.0...v0.4.0
