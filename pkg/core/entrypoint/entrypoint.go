@@ -142,6 +142,7 @@ func (e *Entrypoint) Shutdown() {
 //   - SIGINT or SIGTERM received from the OS
 //   - parent ctx being canceled
 //   - a service returning an error from Start
+//   - a PostStart hook returning an error
 //   - an explicit call to Shutdown
 //
 // Lifecycle order:
@@ -176,22 +177,21 @@ func (e *Entrypoint) Run(ctx context.Context) error {
 		})
 	}
 
-	if err := runHooks(ctx, e.onPostStart); err != nil {
-		svcCancel()
-		return fmt.Errorf("post-start: %w", err)
-	}
-
 	var shutdownCause error
-	select {
-	case <-ctx.Done():
-		shutdownCause = ctx.Err()
-	case sig := <-sigCh:
-		e.logger.Warn("received signal, shutting down", "signal", sig)
-		shutdownCause = fmt.Errorf("received signal: %v", sig)
-	case err := <-svcErrs:
-		e.logger.Error("service error, shutting down", "error", err)
-		shutdownCause = err
-	case <-e.shutdownCtx.Done():
+	if err := runHooks(ctx, e.onPostStart); err != nil {
+		shutdownCause = fmt.Errorf("post-start: %w", err)
+	} else {
+		select {
+		case <-ctx.Done():
+			shutdownCause = ctx.Err()
+		case sig := <-sigCh:
+			e.logger.Warn("received signal, shutting down", "signal", sig)
+			shutdownCause = fmt.Errorf("received signal: %v", sig)
+		case err := <-svcErrs:
+			e.logger.Error("service error, shutting down", "error", err)
+			shutdownCause = err
+		case <-e.shutdownCtx.Done():
+		}
 	}
 
 	svcCancel()
