@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     # Real Postgres/Kafka/Redis for the integration tests of dbservice /
     # kafkaproducer / kafkaconsumer / redisservice — this project tests
-    # against real infrastructure, not mocks (see CLAUDE.md). Mirrors
+    # against real infrastructure, not mocks (see agent.md). Mirrors
     # docker-compose.test.yml for local runs (just test-integration).
     services:
       postgres:

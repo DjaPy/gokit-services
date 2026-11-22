@@ -61,8 +61,10 @@ backs the programmatic `Shutdown()` trigger.
    `svcCtx` (child of the caller's `ctx`) using `sync.WaitGroup.Go`. A service error is
    forwarded to a buffered channel *only* if `svcCtx` is still live — errors observed after
    cancellation are shutdown noise and dropped.
-3. **PostStart hooks** — sequential; a failure cancels `svcCtx` and returns.
-4. **Wait** — a `select` blocks on the first of: caller `ctx` cancellation, an OS signal,
+3. **PostStart hooks** — sequential. A failure becomes the shutdown cause and proceeds
+   directly to cleanup.
+4. **Wait** — after successful PostStart hooks, a `select` blocks on the first of: caller
+   `ctx` cancellation, an OS signal,
    the first service error, or the programmatic shutdown ctx. The winner becomes
    `shutdownCause`.
 5. **PreStop hooks**, then **Stop** — every service that also implements `Shutdown` has

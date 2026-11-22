@@ -17,6 +17,7 @@ import (
 // trackingService records Start/Stop calls and blocks in Start until ctx is canceled.
 type trackingService struct {
 	started  atomic.Bool
+	exited   atomic.Bool
 	stopped  atomic.Bool
 	startErr error
 	stopErr  error
@@ -24,6 +25,7 @@ type trackingService struct {
 
 func (s *trackingService) Start(ctx context.Context) error {
 	s.started.Store(true)
+	defer s.exited.Store(true)
 	if s.startErr != nil {
 		return s.startErr
 	}
@@ -188,6 +190,34 @@ func TestPreStartErrorAbortsRun(t *testing.T) {
 
 	assert.ErrorIs(t, err, hookErr)
 	assert.False(t, svc.started.Load(), "services must not start if pre-start hook fails")
+}
+
+func TestPostStartErrorRunsShutdown(t *testing.T) {
+	postStartErr := errors.New("post-start failed")
+	svc := &trackingService{}
+	var hooks []string
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	err := entrypoint.New(
+		entrypoint.WithServices(svc),
+		noSignals,
+		entrypoint.WithPostStart(func(context.Context) error { return postStartErr }),
+		entrypoint.WithPreStop(func(context.Context) error {
+			hooks = append(hooks, "pre-stop")
+			return nil
+		}),
+		entrypoint.WithPostStop(func(context.Context) error {
+			hooks = append(hooks, "post-stop")
+			assert.True(t, svc.stopped.Load(), "Stop must complete before PostStop")
+			assert.True(t, svc.exited.Load(), "Start must return before PostStop")
+			return nil
+		}),
+	).Run(ctx)
+
+	assert.ErrorIs(t, err, postStartErr)
+	assert.Equal(t, []string{"pre-stop", "post-stop"}, hooks)
 }
 
 func TestShutdownTimeout(t *testing.T) {

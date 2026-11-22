@@ -184,7 +184,7 @@ commits, Prometheus registerer isolation) — is documented in [ARCHITECTURE.md]
 
 The project is pre-1.0 and under active development. It follows SemVer, but while on `v0.x` a `MINOR` bump may
 introduce new features and breaking changes (marked in the [changelog](CHANGELOG.md)), while `PATCH` is bugfixes
-only. Backward compatibility between `0.x` releases is not guaranteed. See [`CLAUDE.md`](CLAUDE.md) for the full
+only. Backward compatibility between `0.x` releases is not guaranteed. See [`agent.md`](agent.md) for the full
 versioning policy and release process.
 
 ## License

@@ -1,5 +1,5 @@
 # Real Postgres/Kafka/Redis for integration tests — this project tests
-# against real infrastructure, not mocks (see CLAUDE.md). Mirrors the
+# against real infrastructure, not mocks (see agent.md). Mirrors the
 # service containers configured in .github/workflows/ci.yml.
 #
 # Usage:
