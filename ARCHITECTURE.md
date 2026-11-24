@@ -33,17 +33,20 @@ shadowing stdlib `net/http`.
 
 ## Service contract (`core/service`)
 
-Three small interfaces, composed by capability rather than inheritance:
+The service contracts describe separate capabilities.
 
 - `Service` — `Start(ctx) error`. The one required method. `Start` **blocks** until the
   service is fully stopped; the `ctx` is canceled when the entrypoint begins shutdown. A
   service that only implements `Service` treats ctx-cancellation as its sole stop signal.
 - `Shutdown` — `Stop(ctx) error`. Optional graceful stop, called with a context bounded by
   the shutdown timeout. Implemented via a type assertion, so it is purely additive.
-- `Prober` — `Probe(ctx) error`. Optional readiness participation; `nil` means ready.
+- `ReadyService` — `Service` with `StartWithReady(ctx, ready) error`. The method runs for
+  the service lifetime and calls the supplied `ready()` once initialization finishes.
+  It returns promptly if initialization fails or its context is canceled during startup.
+- `Prober` — `Probe(ctx) error`. An ongoing readiness check used by `healthserver`.
 
 Every component is a plain struct constructed with functional options (`Option func(*T)`)
-and a `New`/`NewServer` constructor. Which of the three interfaces a component satisfies is
+and a `New`/`NewServer` constructor. Which optional interfaces a component satisfies is
 discovered at runtime by `entrypoint` and `healthserver` through type assertions — there
 are no registration calls and no compile-time interface assertions (`var _ Service = …`) in
 the tree; interface conformance is asserted by the test suite instead.
@@ -60,27 +63,82 @@ backs the programmatic `Shutdown()` trigger.
 2. **Start** — every service's `Start` is launched concurrently under a derived
    `svcCtx` (child of the caller's `ctx`) using `sync.WaitGroup.Go`. A service error is
    forwarded to a buffered channel *only* if `svcCtx` is still live — errors observed after
-   cancellation are shutdown noise and dropped.
-3. **PostStart hooks** — sequential. A failure becomes the shutdown cause and proceeds
-   directly to cleanup.
+   cancellation are shutdown noise and dropped. With `WithFailOnUnexpectedExit`, a
+   service returning `nil` before shutdown also triggers cleanup. The policy applies
+   to both `Start` and `StartWithReady`.
+3. **Startup readiness and PostStart hooks** — with `WithStartupReadiness`, every service
+   must implement `ReadyService`, checked before PreStart. The entrypoint calls
+   `StartWithReady` and waits for one signal per service. A service exit before its
+   signal, a timeout, a signal from the OS, or cancellation enters the shutdown path.
+   The timeout starts after PreStart and defaults to 60 seconds for non-positive values.
+   Without the option, PostStart follows goroutine launch. PostStart hooks run
+   sequentially, and a hook failure proceeds directly to cleanup.
+   While a startup hook runs, the entrypoint listens for an OS signal, caller
+   cancellation, a service error, or a programmatic shutdown. An interruption cancels
+   the startup hook context and skips later startup hooks. If services have been
+   launched, cleanup starts even if the interrupted hook is still running.
 4. **Wait** — after successful PostStart hooks, a `select` blocks on the first of: caller
-   `ctx` cancellation, an OS signal,
-   the first service error, or the programmatic shutdown ctx. The winner becomes
-   `shutdownCause`.
+   `ctx` cancellation, an OS signal, the first service error, or the programmatic shutdown
+   ctx. The result records the triggering signal or error.
 5. **PreStop hooks**, then **Stop** — every service that also implements `Shutdown` has
-   `Stop(stopCtx)` called concurrently; stop errors are logged, not propagated. The reason
-   shutdown began (`shutdownCause`) is not passed to `Stop` — it is `Run`'s return value.
-6. **PostStop hooks** — always run.
+   `Stop(stopCtx)` called concurrently within its group.
+6. **PostStop hooks** — run after the service shutdown phase.
 
-`Run` returns `shutdownCause`, so the process exit reflects *why* it stopped.
+`RunWithResult` separates the triggering OS signal and cause from cleanup errors. It
+joins errors from shutdown hooks and service stops together with exceeded shutdown
+deadlines. After a deadline, operations that are still running may finish after the
+result is returned. `Run` translates an OS signal to its legacy error and otherwise
+returns the cause.
 
-**Shutdown-context invariant.** Once shutdown begins, the service `ctx` is canceled, but the
-stop phase must still be able to do bounded cleanup. The stop context is therefore built as
+**Shutdown-context invariant.** In the default mode, shutdown first cancels the service
+`ctx`. The stop phase must still be able to do bounded cleanup. The stop context is therefore built as
 `context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)` — it inherits the caller's
 values but is detached from its cancellation, so a `Stop` that needs to flush or drain gets
 its full timeout even though the parent `ctx` is already done. PostStop hooks run on a fresh
 `context.Background()` for the same reason. Getting this wrong (using the live `ctx`, or
 `context.Background()` without the parent's values) is the classic regression here.
+
+**Ordered shutdown.** `WithShutdownGroups` registers nonempty groups in the order they
+stop. Ungrouped services form the final group. All groups start concurrently. Group
+contexts keep the caller's values and are canceled by the entrypoint, so caller
+cancellation initiates shutdown while PreStop and earlier groups can still use their
+dependencies. After PreStop, the entrypoint cancels one group's context, calls its
+`Stop` methods concurrently, and waits for both `Start` and `Stop` before moving on.
+After the service shutdown deadline, it cancels the remaining groups and attempts
+their stops with the expired context. PreStop and PostStop each get a fresh
+`WithShutdownTimeout` budget. The entrypoint proceeds after a hook's deadline even
+if the hook is still running.
+
+This sequence shows a clean SIGTERM with startup readiness and separate shutdown groups
+for the HTTP API and PostgreSQL.
+
+```mermaid
+sequenceDiagram
+    participant E as Entrypoint
+    participant A as HTTP API
+    participant D as PostgreSQL service
+
+    E->>E: PreStart
+    par Start the API
+        E-)A: StartWithReady
+        A-->>E: ready()
+    and Start the database
+        E-)D: StartWithReady
+        D-->>E: ready()
+    end
+
+    E->>E: PostStart after both signals
+    Note over E,D: Services are running
+
+    Note over E: SIGTERM received
+    E->>E: PreStop with both groups active
+    E-)A: Cancel context and call Stop
+    A-->>E: Start and Stop return
+    E-)D: Cancel context and call Stop
+    D-->>E: Start and Stop return
+    E->>E: PostStop
+    Note over E: RunWithResult returns Signal = SIGTERM
+```
 
 ## HTTP (`http/server`, `http/client`)
 
@@ -92,9 +150,9 @@ Every request passes through a middleware chain that records four Prometheus ser
 On a recovered panic the client gets an RFC 7807 `application/problem+json` 500 — but only
 when the response hasn't started; once bytes are on the wire the middleware can only log.
 
-The metrics live behind a `prometheus.Registerer` chosen at construction. The default
-registerer is process-global, so two servers built with the default panic on duplicate
-registration — hence `WithPrometheusRegisterer` for tests and multi-server processes.
+The metrics use a `prometheus.Registerer` chosen at construction. Servers on the same
+registerer reuse compatible collectors through `internal/prom.RegisterOrReuse`.
+`WithPrometheusRegisterer` allows tests and applications to isolate metrics.
 
 `responseWriter` is a thin wrapper that captures status and byte count for the metrics. It
 deliberately forwards `http.Flusher` and `http.Hijacker`, so streaming responses (SSE) and
@@ -150,13 +208,13 @@ fetches messages in a loop and dispatches each to a bounded `workerpool.Pool`
 (`WithWorkerPoolSize`), giving concurrency with backpressure — when the pool is saturated,
 `Submit` blocks the fetch loop rather than unbounded buffering.
 
-**At-least-once, deliberately.** The consumer commits an offset *only after* its handler
-returns success; a failing handler leaves the offset uncommitted so the message is
-redelivered. Two context choices enforce this: the handler runs under the task context
-(optionally bounded by `WithHandlerTimeout`), but the **commit uses the `Start` context**,
-not the per-task context, so a commit is never tied to a single task's lifetime. Messages on
-topics with no registered handler are committed immediately (skipped, not redelivered).
-Fetch errors back off before retrying; a canceled context or closed reader ends the loop.
+**Offset commits.** The worker commits a handled message when its handler returns success.
+Kafka tracks one committed offset per partition. A later successful message can advance that
+offset past an earlier message whose handler failed or is still running, preventing redelivery
+of the earlier message. The handler uses the task context, optionally bounded by
+`WithHandlerTimeout`. The commit uses the service's `Start` context. Messages on topics
+without a registered handler are skipped and committed immediately. Fetch errors back off
+before retrying. A canceled context or closed reader ends the loop.
 
 ## Managed resources (`dbservice`, `redisservice`)
 
@@ -201,9 +259,8 @@ that fired). `Task` is `func(ctx)`; the task ctx is the pool's, not the submitte
   "wind down" instruction. Long-running loops select on `ctx.Done()`.
 - **`sync.WaitGroup.Go`** is used for fan-out (entrypoint start/stop, gRPC graceful stop,
   metrics pollers) rather than manual `Add`/`Done`.
-- **Cleanup outlives cancellation.** Any post-cancellation work uses
-  `context.WithoutCancel` (+ a fresh timeout) so it isn't killed by the same cancellation
-  that triggered it — see the entrypoint stop phase and the Kafka commit path.
+- **Cleanup gets its own budget.** Entrypoint derives its stop context with
+  `context.WithoutCancel` and a fresh timeout so service shutdown can outlive the caller's cancellation.
 - **Metrics isolation.** Every metric-owning component accepts a `prometheus.Registerer`;
   the default is global. Tests must pass an isolated `prometheus.NewRegistry()`.
 
@@ -211,9 +268,8 @@ that fired). `Task` is `func(ctx)`; the task ctx is the pool's, not the submitte
 
 Non-obvious spots where a plausible-looking change reintroduces a real bug:
 
-- **Duplicate Prometheus registration.** Two components on the default registerer panic at
-  construction. Always thread `WithPrometheusRegisterer` in tests and multi-instance
-  processes.
+- **Shared Prometheus registration.** Components on the same registerer reuse compatible
+  collectors. Use `WithPrometheusRegisterer` for isolated metrics, including in tests.
 - **gRPC `Stop` on an expired context.** The early `ctx.Err() != nil` branch must stay — a
   graceful stop with no connections finishes instantly and would otherwise race
   `ctx.Done()`, returning `nil` instead of the context error. (Regression fixed in v0.4.1.)
@@ -228,9 +284,8 @@ Non-obvious spots where a plausible-looking change reintroduces a real bug:
 - **Entrypoint stop context.** It must be `WithoutCancel(ctx)` + timeout, never the live
   `ctx` (killed the instant shutdown starts) and never a bare `Background()` (drops the
   caller's values). PostStop hooks run on `Background()` by design.
-- **Kafka commit context.** The offset commit uses the *Start* context, not the per-task
-  context; binding it to the task would let a handler timeout also abort the commit and
-  corrupt at-least-once semantics.
+- **Kafka commit context.** The offset commit uses the `Start` context. This gives the
+  commit a lifetime independent of the handler's per-task timeout.
 - **`workerpool.Submit` after stop.** Sending on the closed task channel is intentionally
   recovered; the recover-to-error path is how a stopped pool reports back instead of
   panicking the caller.

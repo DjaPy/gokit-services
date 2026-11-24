@@ -143,6 +143,10 @@ func connectOnce(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error
 // it does not fail fast — database unavailability at startup is treated as
 // a transient condition bounded by the retry policy and ctx.
 func (s *Service) Start(ctx context.Context) error {
+	return s.StartWithReady(ctx, func() {})
+}
+
+func (s *Service) StartWithReady(ctx context.Context, ready func()) error {
 	cfg, errConfig := pgxpool.ParseConfig(s.dsn)
 	if errConfig != nil {
 		return fmt.Errorf("dbservice: parse dsn: %w", errConfig)
@@ -163,6 +167,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.pool = pool
 	s.mu.Unlock()
 	s.logger.Info("dbservice: connected")
+	ready()
 
 	ticker := time.NewTicker(s.metricsInterval)
 	defer ticker.Stop()

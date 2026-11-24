@@ -60,6 +60,10 @@ func New(size int, opts ...Option) *Pool {
 // When ctx is done, the task channel is closed. If WithDrainOnStop is set,
 // Start waits for workers to finish all remaining queued tasks.
 func (p *Pool) Start(ctx context.Context) error {
+	return p.StartWithReady(ctx, func() {})
+}
+
+func (p *Pool) StartWithReady(ctx context.Context, ready func()) error {
 	for range p.size {
 		p.wg.Go(func() {
 			for task := range p.tasks {
@@ -68,6 +72,7 @@ func (p *Pool) Start(ctx context.Context) error {
 		})
 	}
 
+	ready()
 	<-ctx.Done()
 	close(p.tasks)
 

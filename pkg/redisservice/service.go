@@ -136,6 +136,10 @@ func connectOnce(ctx context.Context, opts *redis.Options) (*redis.Client, error
 // Start establishes the Redis client, retrying with exponential backoff on
 // failure, then blocks until ctx is canceled.
 func (s *Service) Start(ctx context.Context) error {
+	return s.StartWithReady(ctx, func() {})
+}
+
+func (s *Service) StartWithReady(ctx context.Context, ready func()) error {
 	redisOpts, errParse := redis.ParseURL(s.dsn)
 	if errParse != nil {
 		return fmt.Errorf("redisservice: parse dsn: %w", errParse)
@@ -157,6 +161,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.client = client
 	s.mu.Unlock()
 	s.logger.Info("redisservice: connected")
+	ready()
 
 	ticker := time.NewTicker(s.metricsInterval)
 	defer ticker.Stop()

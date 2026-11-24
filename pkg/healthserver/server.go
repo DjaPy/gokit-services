@@ -148,7 +148,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 // Start implements service.Service.
 func (s *Server) Start(ctx context.Context) error {
-	if err := s.inner.Start(ctx); err != nil {
+	return s.StartWithReady(ctx, func() {})
+}
+
+func (s *Server) StartWithReady(ctx context.Context, ready func()) error {
+	if err := s.inner.StartWithReady(ctx, ready); err != nil {
 		return fmt.Errorf("healthserver start: %w", err)
 	}
 	return nil

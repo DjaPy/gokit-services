@@ -289,6 +289,10 @@ func (s *Server) Addr() string {
 // supplied by Stop's context (see Stop). A standalone caller that needs a
 // bounded shutdown should call Stop rather than rely on ctx cancellation alone.
 func (s *Server) Start(ctx context.Context) error {
+	return s.StartWithReady(ctx, func() {})
+}
+
+func (s *Server) StartWithReady(ctx context.Context, ready func()) error {
 	ln, err := net.Listen("tcp", s.server.Addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.server.Addr, err)
@@ -309,6 +313,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	})
 
+	ready()
 	err = s.server.Serve(ln)
 	close(quit)
 	wg.Wait()

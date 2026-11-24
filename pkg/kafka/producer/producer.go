@@ -162,6 +162,10 @@ func (p *Producer) initMetrics() {
 // Start connects to the brokers, retrying with exponential backoff on
 // failure, then blocks until ctx is canceled.
 func (p *Producer) Start(ctx context.Context) error {
+	return p.StartWithReady(ctx, func() {})
+}
+
+func (p *Producer) StartWithReady(ctx context.Context, ready func()) error {
 	dialer, err := kafkanet.NewDialer(p.tlsCfg)
 	if err != nil {
 		return fmt.Errorf("kafkaproducer: dialer: %w", err)
@@ -196,6 +200,7 @@ func (p *Producer) Start(ctx context.Context) error {
 	p.mu.Unlock()
 	p.started.Store(true)
 	p.logger.Info("kafkaproducer: connected")
+	ready()
 
 	<-ctx.Done()
 	return nil
