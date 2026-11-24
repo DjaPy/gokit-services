@@ -199,6 +199,10 @@ func (s *monitoredClientStream) RecvMsg(m any) error {
 // Start establishes the gRPC connection and blocks until ctx is canceled.
 // The connection is NOT closed by Start — call Stop for cleanup.
 func (c *Client) Start(ctx context.Context) error {
+	return c.StartWithReady(ctx, func() {})
+}
+
+func (c *Client) StartWithReady(ctx context.Context, ready func()) error {
 	conn, err := grpclib.NewClient(c.target, c.dialOpts...)
 	if err != nil {
 		return fmt.Errorf("grpc client: %w", err)
@@ -207,6 +211,7 @@ func (c *Client) Start(ctx context.Context) error {
 	c.conn = conn
 	c.mu.Unlock()
 	c.logger.Info("gRPC client connected", slog.String("target", c.target))
+	ready()
 
 	<-ctx.Done()
 	return nil

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -169,6 +170,10 @@ func (s *Server) GRPCServer() *grpclib.Server {
 // Start listens on the configured address and serves gRPC traffic.
 // It blocks until the context is canceled or the server stops.
 func (s *Server) Start(ctx context.Context) error {
+	return s.StartWithReady(ctx, func() {})
+}
+
+func (s *Server) StartWithReady(ctx context.Context, ready func()) error {
 	ln, err := net.Listen("tcp", net.JoinHostPort(s.host, strconv.Itoa(s.port)))
 	if err != nil {
 		return fmt.Errorf("grpc server listen: %w", err)
@@ -188,11 +193,13 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	})
 
-	if err := s.srv.Serve(ln); err != nil {
-		s.logger.Error("gRPC server error", slog.Any("error", err))
-	}
+	ready()
+	err = s.srv.Serve(ln)
 	close(quit)
 	wg.Wait()
+	if err != nil && !errors.Is(err, grpclib.ErrServerStopped) {
+		return fmt.Errorf("grpc server serve: %w", err)
+	}
 	return nil
 }
 

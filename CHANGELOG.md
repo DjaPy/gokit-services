@@ -8,6 +8,22 @@ see the versioning policy in `agent.md`).
 
 ## [Unreleased]
 
+### Added
+- `entrypoint.WithStartupReadiness` waits for every registered service to report startup
+  readiness before running `PostStart`. Built-in lifecycle components implement
+  `service.ReadyService` and continue to support `Start(ctx)`.
+- `entrypoint.WithFailOnUnexpectedExit` treats a service returning `nil` before shutdown
+  as a failure and stops the remaining services.
+- `entrypoint.WithShutdownGroups` lets applications define the order in which service groups stop.
+  `PreStop`, service shutdown, and `PostStop` each get their own timeout budget in this mode.
+- `entrypoint.RunWithResult` reports the triggering OS signal, the cause, and cleanup errors
+  separately. `Run(ctx)` retains its existing return behavior.
+
+### Fixed
+- `entrypoint` handles shutdown requests during `PreStart` and `PostStart`. It cancels the
+  active hook context and cleans up services that have already started.
+- `grpc/server` returns unexpected `Serve` errors to the caller.
+
 ## [0.6.1] - 2026-11-22
 
 ### Fixed

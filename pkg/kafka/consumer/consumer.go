@@ -194,6 +194,10 @@ func (c *Consumer) initMetrics() {
 // Start connects to the brokers, retrying with exponential backoff on
 // failure, then consumes registered topics until ctx is canceled.
 func (c *Consumer) Start(ctx context.Context) error {
+	return c.StartWithReady(ctx, func() {})
+}
+
+func (c *Consumer) StartWithReady(ctx context.Context, ready func()) error {
 	topicList := c.topicList()
 	if len(topicList) == 0 {
 		return errors.New("kafkaconsumer: no topics registered, call Handle before Start")
@@ -234,6 +238,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	wg.Go(func() { _ = pool.Start(ctx) })
 	wg.Go(func() { c.pollLag(ctx, reader) })
 
+	ready()
 	c.consume(ctx, reader, pool)
 
 	wg.Wait()

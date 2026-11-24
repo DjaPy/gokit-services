@@ -9,6 +9,11 @@ type Service interface {
 	Start(ctx context.Context) error
 }
 
+type ReadyService interface {
+	Service
+	StartWithReady(ctx context.Context, ready func()) error
+}
+
 // Shutdown is an optional interface a service may implement to perform
 // cleanup during graceful shutdown. Stop is called with a context bounded
 // by the entrypoint's shutdown timeout.

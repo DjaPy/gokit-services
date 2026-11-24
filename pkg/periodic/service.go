@@ -54,6 +54,10 @@ func New(interval time.Duration, fn func(context.Context) error, opts ...Option)
 
 // Start implements service.Service. It blocks until ctx is canceled.
 func (s *Service) Start(ctx context.Context) error {
+	return s.StartWithReady(ctx, func() {})
+}
+
+func (s *Service) StartWithReady(ctx context.Context, ready func()) error {
 	if s.immediateStart {
 		if err := s.fn(ctx); err != nil {
 			s.logger.Error("periodic fn error", slog.Any("error", err))
@@ -62,6 +66,7 @@ func (s *Service) Start(ctx context.Context) error {
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
+	ready()
 
 	if s.overlapping {
 		return s.runOverlapping(ctx, ticker)
