@@ -8,6 +8,8 @@ see the versioning policy in `agent.md`).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
 ### Added
 - `entrypoint.WithStartupReadiness` waits for every registered service to report startup
   readiness before running `PostStart`. Built-in lifecycle components implement
@@ -168,7 +170,8 @@ see the versioning policy in `agent.md`).
 - `workerpool` — bounded goroutine pool with backpressure via `Submit(ctx, task)`
 - `service` — base interfaces `Service`, `Shutdown`, `Prober`
 
-[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/DjaPy/gokit-services/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/DjaPy/gokit-services/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/DjaPy/gokit-services/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/DjaPy/gokit-services/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/DjaPy/gokit-services/compare/v0.4.1...v0.5.0
